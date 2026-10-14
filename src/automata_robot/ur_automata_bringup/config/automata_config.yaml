@@ -246,3 +246,11 @@ scan3d:
   next_topic:     /scan3d/next       # in:  any message -> photo taken, go to the next waypoint
   done_topic:     /scan3d/done       # out: "scan3D object_3" at the end of the scan
   wait_for_next:  true               # false: do not wait for /next (tests without the camera)
+
+# Robot digital I/O <-> std_msgs/Bool topics (ur_io_ros2_manager, started by
+# ur_automata_control.launch.py). input: published when the pin changes;
+# output: a message on the topic sets the pin (SetIO service). After a change:
+# rebuild ur_automata_bringup + restart the bring-up. Example:
+#   - {topic_name: /task_pause, io_index: 1, io_type: input}
+#   - {topic_name: /led_ring,   io_index: 0, io_type: output}
+digital_io: []

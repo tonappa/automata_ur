@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -119,5 +120,13 @@ def generate_launch_description():
                 "description_file": description_file,
                 "controllers_file": controllers_file,
             }.items(),
+        ),
+        # Digital I/O <-> topics, mapping in the digital_io section of automata_config.yaml
+        Node(
+            package="ur_io_ros2_manager",
+            executable="ur_io_ros2_manager_node",
+            output="screen",
+            parameters=[{"config_file_path": os.path.join(
+                get_package_share_directory("ur_io_ros2_manager"), "config", "config.yaml")}],
         ),
     ])
