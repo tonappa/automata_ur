@@ -18,27 +18,5 @@ else
     echo "Workspace not built yet. Run: colcon build --cmake-args -DCMAKE_CXX_FLAGS=\"-w\" --executor sequential"
 fi
 
-# --- install workspace dependencies ---
-echo "Updating ROS dependencies..."
-
-SUDO_CMD=""
-if [ "$(id -u)" -ne 0 ]; then
-    SUDO_CMD="sudo"
-fi
-
-$SUDO_CMD apt-get update -y && \
-$SUDO_CMD apt-get upgrade -y || echo "Apt update/upgrade failed, continuing..."
-
-if command -v rosdep > /dev/null; then
-    rosdep update || echo "rosdep update failed, continuing..."
-    if [ -d "${WORKSPACE_PATH}/src" ]; then
-        rosdep install --from-paths "${WORKSPACE_PATH}/src" --ignore-src -r -y \
-            --skip-keys "moveit_resources" || \
-        echo "rosdep install encountered issues, continuing..."
-    fi
-else
-    echo "rosdep not found, skipping rosdep steps."
-fi
-
 # execute the user command (e.g., bash)
 exec "$@"
