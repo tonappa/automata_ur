@@ -1,0 +1,31 @@
+# ROS <-> MQTT bridge (ika-rwth-aachen/mqtt_client) for the photo handshake of
+# scan_tsp_node mode:=execute. Started by scan_tsp.launch.py with mode:=execute.
+# The ROS topics are the scan3d: section of automata_config.yaml; the MQTT
+# topics are the ones of the VimbaX camera app (mqtt_client_tutorial).
+# primitive: true -> the std_msgs/String text goes to MQTT as it is, and back.
+# After a change: rebuild ur_automata_bringup.
+/**/*:
+  ros__parameters:
+    broker:
+      host: localhost      # PC running Mosquitto
+      port: 1883
+    bridge:
+      ros2mqtt:
+        ros_topics:
+          - /scan3d/acquire
+        /scan3d/acquire:
+          mqtt_topic: vimbax/commands
+          primitive: true
+          ros_type: std_msgs/msg/String
+          advanced:
+            mqtt:
+              qos: 1
+      mqtt2ros:
+        mqtt_topics:
+          - vimbax/status
+        vimbax/status:
+          ros_topic: /scan3d/status
+          primitive: true
+          advanced:
+            mqtt:
+              qos: 1

@@ -18,6 +18,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(geometric_shapes REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 # OR-Tools C++ binary archive, installed in /opt/ortools by docker/Dockerfile.
 # Without it this experimental package builds nothing, so the rest of the
@@ -76,6 +77,7 @@ target_link_libraries(scan_tsp_node
   route_solver
   plan_file
   ${UR_SCAN_WAYPOINTS_LIB}
+  nlohmann_json::nlohmann_json
 )
 ament_target_dependencies(scan_tsp_node
   rclcpp

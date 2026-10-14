@@ -18,13 +18,15 @@
 //   mode:=execute  Loads plan_file, checks it against the current cell, then
 //     waits for an object name on start_topic and executes the plan. If the
 //     robot is not in the start state of the plan, it first goes there with a
-//     planned motion. On every waypoint it publishes the camera pose
-//     ("wp_5; position: [...]; orientation: [...]") and a photo request
-//     ("image_5"), then waits for any message on next_topic. At the end it
-//     publishes "scan3D <object>" and waits for the next object (topics in the
-//     scan3d: section of automata_config.yaml):
+//     planned motion. On every waypoint it publishes the photo request with
+//     the camera pose on capture_topic
+//     ("acquire: object_1; camera pose: [x, y, z, qx, qy, qz, qw]; waypoint_5"),
+//     then waits on status_topic for the camera state (JSON) "measure_complete"
+//     with the same object and waypoint. At the end it publishes
+//     "scan3D <object>" and waits for the next object (topics in the scan3d:
+//     section of automata_config.yaml):
 //       ros2 topic pub --once /scan3d/start std_msgs/msg/String "{data: object_1}"
-//       ros2 topic pub --once /scan3d/next std_msgs/msg/String "{data: ok}"
+//       ros2 topic pub --once /scan3d/status std_msgs/msg/String "{data: '{\"state\": \"measure_complete\", \"object\": \"object_1\", \"waypoint\": 1}'}"
 //       ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}   (stops after the current motion)
 //       ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}   (resumes)
 //
@@ -57,6 +59,7 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/robot_state/robot_state.h>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
+#include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -74,9 +77,35 @@ using MoveGroup = moveit::planning_interface::MoveGroupInterface;
 
 static std::atomic<bool> g_paused{false};          // /pause sets it, /start clears it
 static std::atomic<bool> g_scan_running{false};    // a scan is being executed
-static std::atomic<bool> g_next_received{false};   // a message arrived on next_topic
+static std::atomic<bool> g_photo_done{false};      // the camera finished the photo we wait for
 static std::mutex g_start_mutex;
 static std::string g_start_object;                 // object name from start_topic, "" = none
+static std::mutex g_photo_mutex;
+static std::string g_photo_object;                 // photo we wait for: object name ...
+static int g_photo_waypoint = 0;                   // ... and waypoint number, 0 = none
+
+// Camera state on status_topic, e.g.
+//   {"state": "measure_complete", "object": "object_3", "waypoint": 5, "timestamp": ...}
+// Sets g_photo_done when it is the end of the photo we wait for.
+static void on_camera_status(const std_msgs::msg::String::SharedPtr msg)
+{
+  nlohmann::json status = nlohmann::json::parse(msg->data, nullptr, false);   // false: no exceptions
+  if (status.is_discarded() || !status.is_object()) {
+    std::printf("        stato camera non valido (non JSON): %s\n", msg->data.c_str());
+    std::fflush(stdout);
+    return;
+  }
+  if (!status.contains("state") || !status["state"].is_string()) return;
+  if (status["state"].get<std::string>() != "measure_complete") return;
+  if (!status.contains("object") || !status["object"].is_string()) return;
+  if (!status.contains("waypoint") || !status["waypoint"].is_number_integer()) return;
+
+  std::lock_guard<std::mutex> lock(g_photo_mutex);
+  if (g_photo_waypoint > 0 && status["object"].get<std::string>() == g_photo_object &&
+      status["waypoint"].get<int>() == g_photo_waypoint) {
+    g_photo_done = true;
+  }
+}
 
 static double seconds_since(std::chrono::steady_clock::time_point t0)
 {
@@ -311,9 +340,8 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("speed",                1.0);
   // execute: topics of the photo handshake (scan3d: in automata_config.yaml).
   node->declare_parameter<std::string>("start_topic",          "/scan3d/start");
-  node->declare_parameter<std::string>("waypoint_topic",       "/scan3d/waypoint");
-  node->declare_parameter<std::string>("capture_topic",        "/scan3d/capture");
-  node->declare_parameter<std::string>("next_topic",           "/scan3d/next");
+  node->declare_parameter<std::string>("capture_topic",        "/scan3d/acquire");
+  node->declare_parameter<std::string>("status_topic",         "/scan3d/status");
   node->declare_parameter<std::string>("done_topic",           "/scan3d/done");
   node->declare_parameter<bool>       ("wait_for_next",        true);
 
@@ -344,9 +372,8 @@ int main(int argc, char ** argv)
   const int         tsp_check_neighbours = node->get_parameter("tsp_check_neighbours").as_int();
   const double      start_tolerance = node->get_parameter("start_tolerance_rad").as_double();
   const std::string start_topic     = node->get_parameter("start_topic").as_string();
-  const std::string waypoint_topic  = node->get_parameter("waypoint_topic").as_string();
   const std::string capture_topic   = node->get_parameter("capture_topic").as_string();
-  const std::string next_topic      = node->get_parameter("next_topic").as_string();
+  const std::string status_topic    = node->get_parameter("status_topic").as_string();
   const std::string done_topic      = node->get_parameter("done_topic").as_string();
   const bool        wait_for_next   = node->get_parameter("wait_for_next").as_bool();
 
@@ -651,7 +678,6 @@ int main(int argc, char ** argv)
     std::printf("Foto numerate da 1 (polo nord) a %zu (polo sud).\n", visited.size());
 
     // --- Topics of the photo handshake (scan3d: in automata_config.yaml) ---
-    auto waypoint_pub = node->create_publisher<std_msgs::msg::String>(waypoint_topic, 10);
     auto capture_pub  = node->create_publisher<std_msgs::msg::String>(capture_topic, 10);
     auto done_pub     = node->create_publisher<std_msgs::msg::String>(done_topic, 10);
     auto start_sub = node->create_subscription<std_msgs::msg::String>(
@@ -664,11 +690,10 @@ int main(int argc, char ** argv)
         std::lock_guard<std::mutex> lock(g_start_mutex);
         g_start_object = msg->data;
       });
-    auto next_sub = node->create_subscription<std_msgs::msg::String>(
-      next_topic, 10, [](const std_msgs::msg::String::SharedPtr) { g_next_received = true; });
+    auto status_sub = node->create_subscription<std_msgs::msg::String>(status_topic, 10, on_camera_status);
 
-    std::printf("Topic: start %s | waypoint %s | capture %s | next %s | done %s | wait_for_next %s\n",
-                start_topic.c_str(), waypoint_topic.c_str(), capture_topic.c_str(), next_topic.c_str(),
+    std::printf("Topic: start %s | capture %s | status %s | done %s | wait_for_next %s\n",
+                start_topic.c_str(), capture_topic.c_str(), status_topic.c_str(),
                 done_topic.c_str(), wait_for_next ? "true" : "false");
 
     // Gray camera frustums on the waypoints of the plan.
@@ -777,32 +802,40 @@ int main(int argc, char ** argv)
           const int n = photo_number[seg.waypoint];
           const std::vector<double> & c = seg.camera_pose;   // x y z qx qy qz qw, global_frame
 
-          // Camera pose of this waypoint.
-          char text[256];
-          std_msgs::msg::String msg;
-          std::snprintf(text, sizeof(text), "wp_%d; position: [%.4f, %.4f, %.4f]; orientation: [%.5f, %.5f, %.5f, %.5f]",
-                        n, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
-          msg.data = text;
-          waypoint_pub->publish(msg);
-          std::printf("        -> %s\n", text);
+          // The photo we wait for is set before the request, so an older
+          // "measure_complete" does not count.
+          {
+            std::lock_guard<std::mutex> lock(g_photo_mutex);
+            g_photo_object = object_name;
+            g_photo_waypoint = n;
+            g_photo_done = false;
+          }
 
-          // Photo request. The flag is cleared first, so an old "next" does not count.
-          g_next_received = false;
-          msg.data = "image_" + std::to_string(n);
+          // Photo request with the camera pose of this waypoint.
+          char text[512];
+          std::snprintf(text, sizeof(text),
+                        "acquire: %s; camera pose: [%.4f, %.4f, %.4f, %.5f, %.5f, %.5f, %.5f]; waypoint_%d",
+                        object_name.c_str(), c[0], c[1], c[2], c[3], c[4], c[5], c[6], n);
+          std_msgs::msg::String msg;
+          msg.data = text;
           capture_pub->publish(msg);
-          std::printf("        -> %s (foto %d/%zu)\n", msg.data.c_str(), waypoints_done, visited.size());
+          std::printf("        -> %s (foto %d/%zu)\n", text, waypoints_done, visited.size());
           std::fflush(stdout);
 
           if (wait_for_next) {
-            std::printf("        attendo next su %s ...\n", next_topic.c_str());
+            std::printf("        attendo measure_complete su %s ...\n", status_topic.c_str());
             std::fflush(stdout);
             const auto wait_t0 = std::chrono::steady_clock::now();
-            while (!g_next_received.load() && rclcpp::ok()) {
+            while (!g_photo_done.load() && rclcpp::ok()) {
               std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             const double waited = seconds_since(wait_t0);
             photo_wait_s += waited;
-            std::printf("        next ricevuto (%.1f s)\n", waited);
+            std::printf("        foto fatta (%.1f s)\n", waited);
+          }
+          {
+            std::lock_guard<std::mutex> lock(g_photo_mutex);
+            g_photo_waypoint = 0;
           }
         }
         std::fflush(stdout);

@@ -235,17 +235,20 @@ scan:
   # cell (center, radius, walls, platform, end effector, TCP, base pose).
   recording_file: /home/ros/ur/recordings/scan_sequence.yaml
 
-# Photo handshake of scan_tsp_node mode:=execute (std_msgs/String topics, plain
-# text, to be bridged to MQTT). Waypoints are numbered 1..N from the north pole
-# to the south pole, ring by ring (counterclockwise from +X of global_frame),
-# counting only the waypoints of the plan.
+# Photo handshake of scan_tsp_node mode:=execute (std_msgs/String topics).
+# acquire and status go to/from the VimbaX camera app over MQTT through the
+# mqtt_client bridge (config/mqtt_bridge.yaml); start and done are for the
+# orchestrator (for now by hand with ros2 topic pub / echo). Waypoints are
+# numbered 1..N from the north pole to the south pole, ring by ring
+# (counterclockwise from +X of global_frame), counting only the waypoints of
+# the plan. Camera pose = end_effector_link in global_frame, meters.
 scan3d:
-  start_topic:    /scan3d/start      # in:  object name, e.g. "object_3" -> starts a scan
-  waypoint_topic: /scan3d/waypoint   # out: "wp_5; position: [x, y, z]; orientation: [qx, qy, qz, qw]"
-  capture_topic:  /scan3d/capture    # out: "image_5" -> take the photo
-  next_topic:     /scan3d/next       # in:  any message -> photo taken, go to the next waypoint
-  done_topic:     /scan3d/done       # out: "scan3D object_3" at the end of the scan
-  wait_for_next:  true               # false: do not wait for /next (tests without the camera)
+  start_topic:    /scan3d/start      # in:  object name "object_3" -> starts a scan
+  capture_topic:  /scan3d/acquire    # out: "acquire: object_3; camera pose: [x, y, z, qx, qy, qz, qw]; waypoint_5"
+  status_topic:   /scan3d/status     # in:  camera state, JSON {"state", "object", "waypoint", "timestamp"};
+                                     #      "measure_complete" with this object and waypoint -> next waypoint
+  done_topic:     /scan3d/done       # out: "scan3D object_3" (or "scan3D object_3 ERROR") at the end of the scan
+  wait_for_next:  true               # false: do not wait for the camera (tests without the camera)
 
 # Robot digital I/O <-> std_msgs/Bool topics (ur_io_ros2_manager, started by
 # ur_automata_control.launch.py). input: published when the pin changes;

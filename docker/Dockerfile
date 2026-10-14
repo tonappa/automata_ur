@@ -61,7 +61,9 @@ RUN apt-get update && \
     ros-${ROS_DISTRO}-rqt-runtime-monitor \
     ros-${ROS_DISTRO}-plotjuggler-ros \
     ros-${ROS_DISTRO}-moveit \
-    ros-${ROS_DISTRO}-trac-ik-kinematics-plugin && \
+    ros-${ROS_DISTRO}-trac-ik-kinematics-plugin \
+    ros-${ROS_DISTRO}-mqtt-client \
+    nlohmann-json3-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # ============ OR-Tools C++ (Apache-2.0), used by ur_automata_scan_tsp ============ #

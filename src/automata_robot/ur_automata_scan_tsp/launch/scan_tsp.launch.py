@@ -4,6 +4,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import LaunchConfigurationEquals
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -91,13 +92,23 @@ def generate_launch_description():
             "speed": ParameterValue(LaunchConfiguration("speed"), value_type=float),
             # Photo handshake of mode:=execute (scan3d: in automata_config.yaml)
             "start_topic":    h["start_topic"],
-            "waypoint_topic": h["waypoint_topic"],
             "capture_topic":  h["capture_topic"],
-            "next_topic":     h["next_topic"],
+            "status_topic":   h["status_topic"],
             "done_topic":     h["done_topic"],
             "wait_for_next":  h["wait_for_next"],
             },
         ],
+    )
+
+    # ROS <-> MQTT bridge of the photo handshake (camera topics), only for execute.
+    mqtt_bridge = Node(
+        package="mqtt_client",
+        executable="mqtt_client",
+        name="mqtt_client",
+        output="screen",
+        parameters=[os.path.join(get_package_share_directory("ur_automata_bringup"),
+                                 "config", "mqtt_bridge.yaml")],
+        condition=LaunchConfigurationEquals("mode", "execute"),
     )
 
     return LaunchDescription([
@@ -116,4 +127,5 @@ def generate_launch_description():
         # execute: speed relative to the plan, 1.0 = as planned, 0.5 = half speed (max 1.0)
         DeclareLaunchArgument("speed", default_value="1.0"),
         scan_node,
+        mqtt_bridge,
     ])
