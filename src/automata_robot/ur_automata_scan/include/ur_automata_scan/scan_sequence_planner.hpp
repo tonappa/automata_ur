@@ -3,46 +3,36 @@
 #include <functional>
 #include <vector>
 
-// Un candidato = una configurazione dei giunti che raggiunge un waypoint,
-// piu' un costo extra opzionale (es. penalita' sul pitch scelto).
+// One joint configuration that reaches a waypoint, plus an optional extra cost.
 struct SeqCandidate {
   std::vector<double> joints;
   double extra_cost = 0.0;
 };
 
 struct SeqResult {
-  std::vector<int> chosen;   // per ogni layer: indice del candidato scelto, -1 se il layer e' vuoto
-  double total_cost = 0.0;   // somma delle distanze joint-space lungo la catena + extra_cost
+  std::vector<int> chosen;   // per layer: chosen candidate, -1 = empty layer
+  double total_cost = 0.0;
 };
 
-// Distanza euclidea nei giunti, SENZA wrap a +-pi: i giunti UR hanno limiti
-// +-2pi e non possono "passare dall'altra parte", quindi andare da +179 a
-// -179 gradi e' davvero un giro quasi completo, non 2 gradi.
+// Euclidean joint distance WITHOUT wrapping at +-pi: UR joints span +-2pi, so
+// +179 -> -179 degrees really is almost a full turn.
 double joint_l2(const std::vector<double> & a, const std::vector<double> & b);
 
-// Callback opzionale sugli archi: ritorna false se il tratto dal candidato
-// prev_c del layer prev_layer al candidato c del layer `layer` e' bloccato
-// (es. la retta in joint space attraversa un ostacolo). prev_layer = -1 indica
-// il punto di partenza. Un arco bloccato non e' vietato: costa blocked_penalty
-// in piu', cosi' la DP lo evita quando puo' ma non scarta il waypoint.
+// Returns false if the segment (prev_layer, prev_c) -> (layer, c) is blocked
+// (prev_layer = -1 = start). A blocked segment is not forbidden: it costs
+// blocked_penalty more, so the DP avoids it without dropping the waypoint.
 using EdgeFilter = std::function<bool(int prev_layer, int prev_c, int layer, int c)>;
 
-// Optional cost of the segment from candidate prev_c of layer prev_layer to
-// candidate c of layer `layer` (prev_layer = -1 is the start). When it is not
-// set the cost is joint_l2 between the two configurations.
+// Cost of the segment (prev_layer, prev_c) -> (layer, c); unset = joint_l2.
 using EdgeCost = std::function<double(int prev_layer, int prev_c, int layer, int c)>;
 
-// How the cost of a segment between two consecutive candidates is measured.
 struct SeqCost {
   EdgeCost edge_cost;              // empty = joint_l2
   double blocked_penalty = 1000.0; // added to a blocked segment (see EdgeFilter)
 };
 
-// Programmazione dinamica su grafo a strati: layer i = candidati del waypoint
-// i. Sceglie un candidato per layer minimizzando la somma delle distanze
-// joint-space tra layer consecutivi (piu' gli extra_cost), partendo da
-// start_joints. I layer vuoti (waypoint irraggiungibili) vengono scavalcati.
-// `cost` sets the segment cost and the blocked-segment penalty.
+// Layered DP: layer i = candidates of waypoint i. Picks one candidate per layer
+// minimizing the total segment cost from start_joints; empty layers are skipped.
 SeqResult choose_sequence(const std::vector<double> & start_joints,
                           const std::vector<std::vector<SeqCandidate>> & layers,
                           const EdgeFilter & edge_ok = EdgeFilter(),

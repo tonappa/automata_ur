@@ -14,8 +14,7 @@ static void emit_numbers(YAML::Emitter & out, const std::vector<double> & values
 
 bool save_plan(const std::string & path, const ScanPlan & plan, std::string & error)
 {
-  // Header and segments with the writer of ur_automata_scan, then the plan
-  // section appended as one more top-level key.
+  // Recording written by ur_automata_scan, then the `plan:` key appended.
   if (!save_recording(path, plan.recording, error)) return false;
 
   const PlanData & d = plan.data;

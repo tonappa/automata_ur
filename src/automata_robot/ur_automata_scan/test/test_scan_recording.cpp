@@ -42,8 +42,7 @@ static ScanRecording sample_recording()
   return rec;
 }
 
-// What is saved comes back the same: header, segments, optional fields,
-// numbers with full precision.
+// Save and load give back the same data, full precision.
 TEST(ScanRecording, SaveAndLoadRoundTrip)
 {
   const std::string path = "/tmp/test_scan_recording.yaml";
@@ -78,8 +77,7 @@ TEST(ScanRecording, SaveAndLoadRoundTrip)
   EXPECT_TRUE(rec.segments[1].camera_pose.empty());
 }
 
-// Half speed: twice the time, half the velocity, a quarter of the acceleration,
-// same positions.
+// Half speed: 2x time, 1/2 velocity, 1/4 acceleration, same positions.
 TEST(ScanRecording, ScaleSegmentSpeed)
 {
   RecordedSegment seg;
@@ -101,8 +99,7 @@ TEST(ScanRecording, ScaleSegmentSpeed)
   EXPECT_DOUBLE_EQ(same.points[0].velocities[0], 0.4);
 }
 
-// A missing file or a point with the wrong number of joints is an error, not
-// a partial recording.
+// Missing file or wrong joint count: error, not a partial recording.
 TEST(ScanRecording, RejectsBadFiles)
 {
   ScanRecording rec;

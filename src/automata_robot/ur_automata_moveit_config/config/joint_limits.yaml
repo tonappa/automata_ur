@@ -1,8 +1,5 @@
-# These limits are used by MoveIt and augment/override the definitions in ur_description.
-#
-# While the robot does not inherently have any limits on joint accelerations (only on torques),
-# MoveIt needs them for time parametrization. They were chosen conservatively to work in most use
-# cases. For specific applications, higher values might lead to better execution performance.
+# Override ur_description. Acceleration limits (conservative) are needed by
+# MoveIt for time parametrization.
 
 joint_limits:
   shoulder_pan_joint:

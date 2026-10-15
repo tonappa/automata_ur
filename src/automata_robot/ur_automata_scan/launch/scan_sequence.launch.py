@@ -10,7 +10,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _load_config():
-    """Legge automata_config.yaml dal share installato di ur_automata_bringup."""
+    """automata_config.yaml from the installed share of ur_automata_bringup."""
     cfg_path = os.path.join(
         get_package_share_directory("ur_automata_bringup"),
         "config",
@@ -21,10 +21,8 @@ def _load_config():
 
 
 def _load_kinematics_yaml():
-    """Carica kinematics.yaml di ur_automata_moveit_config come dizionario.
-    Serve a istanziare il plugin IK (TRAC-IK) sul RobotState locale del nodo:
-    senza questi parametri il setFromIK fallisce con 'No kinematics solver
-    instantiated for group ur_manipulator'."""
+    """kinematics.yaml: without it the node's setFromIK fails with
+    'No kinematics solver instantiated for group ur_manipulator'."""
     path = os.path.join(
         get_package_share_directory("ur_automata_moveit_config"),
         "config",
@@ -40,14 +38,11 @@ def generate_launch_description():
     s = cfg["scan"]
     kinematics_yaml = _load_kinematics_yaml()
 
-    # Enumerazione: ogni posa ha al massimo 8 soluzioni discrete, quindi non
-    # serve minimizzare la distanza dal seed (solve_type Distance usa tutto il
-    # timeout). Speed ritorna la soluzione del ramo piu' vicino al seed appena
-    # la trova: 10-50x piu' veloce. move_group resta con la sua kinematics.yaml.
+    # TRAC-IK Speed for the enumeration (10-50x faster than Distance, which uses
+    # the whole timeout); move_group keeps its own kinematics.yaml.
     kinematics_yaml[p["group"]]["solve_type"] = "Speed"
 
-    # Optional list: not passed when missing or empty (ROS cannot guess the
-    # type of an empty list).
+    # Not passed when empty: ROS cannot guess the type of an empty list.
     retry_param = {}
     retry_times = [float(t) for t in (s.get("retry_planning_times") or [])]
     if retry_times:
@@ -59,18 +54,15 @@ def generate_launch_description():
         output="screen",
         emulate_tty=True,
         parameters=[
-            # I parametri del solver IK vanno sotto `robot_description_kinematics`.
             {"robot_description_kinematics": kinematics_yaml},
             retry_param,
             {
-            # Parametri di planning (da sezione `planning`)
             "global_frame":              p["global_frame"],
             "planning_group":            p["group"],
             "end_effector_link":         p["end_effector_link"],
             "home_pose_name":            p["home_pose_name"],
             "lower_home_pose_name":      p["lower_home_pose_name"],
             "trajectory_scaling_factor": p["trajectory_scaling_factor"],
-            # Parametri di scan (da sezione `scan`)
             "scan_center":                 s["center"],
             "scan_radius":                 s["radius"],
             "scan_hemisphere":             s["hemisphere"],
@@ -98,14 +90,13 @@ def generate_launch_description():
             "scan_enum_ik_timeout":        s["enum_ik_timeout"],
             "scan_planning_time":          s["planning_time"],
             "scan_planning_attempts":      s["planning_attempts"],
-            # Sectors and arm swings (optional keys: defaults = old behavior)
+            # Optional keys: defaults = old behavior
             "scan_sectors":                int(s.get("sectors", 0)),
             "scan_sector_offset_deg":      float(s.get("sector_offset_deg", 0.0)),
             "scan_joint_cost_weight":      float(s.get("joint_cost_weight", 0.1)),
             "scan_swing_threshold_m":      float(s.get("swing_threshold_m", 0.25)),
             "dry_run": ParameterValue(LaunchConfiguration("dry_run"), value_type=bool),
-            # Calibration run: record:=true saves every executed motion to
-            # scan.recording_file at the end of a complete scan.
+            # record:=true saves the executed motions to scan.recording_file
             "record": ParameterValue(LaunchConfiguration("record"), value_type=bool),
             "recording_file":              str(s.get("recording_file", "")),
             },
@@ -113,8 +104,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # dry_run:=true plans the sequence, prints the forecast and exits
-        # without moving the robot.
+        # dry_run:=true: plan, print the forecast and exit without moving
         DeclareLaunchArgument("dry_run", default_value="false"),
         DeclareLaunchArgument("record", default_value="false"),
         scan_node,

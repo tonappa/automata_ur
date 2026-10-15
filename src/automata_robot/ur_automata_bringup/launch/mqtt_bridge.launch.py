@@ -5,9 +5,7 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 
-# ROS <-> MQTT bridge of the whole cell (3D scan and HSI), config in
-# config/mqtt_bridge.yaml. Included by ur_automata_bringup.launch.py; start it
-# by hand only when the scan or HSI nodes are launched on their own.
+# The single ROS <-> MQTT bridge of the cell (config/mqtt_bridge.yaml).
 def generate_launch_description():
     mqtt_bridge = Node(
         package="mqtt_client",

@@ -14,7 +14,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(geometric_shapes REQUIRED)
 find_package(Eigen3 REQUIRED)
 
-# Libreria che costruisce la PlanningScene (riusabile da altri nodi).
+# Library that builds the planning scene.
 add_library(scan_scene_builder src/scan_scene_builder.cpp)
 target_include_directories(scan_scene_builder PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -30,7 +30,7 @@ ament_target_dependencies(scan_scene_builder
   ament_index_cpp
 )
 
-# Eseguibile del nodo che applica la scena via /apply_planning_scene.
+# Node that applies the scene through /apply_planning_scene.
 add_executable(scene_publisher_node src/scene_publisher_node.cpp)
 target_link_libraries(scene_publisher_node scan_scene_builder)
 ament_target_dependencies(scene_publisher_node

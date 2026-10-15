@@ -1,3 +1,4 @@
+# MoveIt (move_group), RViz and the collision scene.
 import os
 import yaml
 
@@ -14,7 +15,6 @@ from launch_ros.substitutions import FindPackageShare
 
 from moveit_configs_utils import MoveItConfigsBuilder
 
-################################## config load ##################################
 def _load_config():
 
     cfg_path = os.path.join(
@@ -38,8 +38,7 @@ def _calibration_path(cfg):
 
 
 def launch_setup(context, *args, **kwargs):
-    # ur_type deve essere risolto qui (stringa) perché MoveItConfigsBuilder lo
-    # passa direttamente all'xacro come mapping; LaunchConfiguration non andrebbe.
+    # MoveItConfigsBuilder passes the mappings to xacro as plain strings.
     ur_type = LaunchConfiguration("ur_type").perform(context)
     use_rviz = LaunchConfiguration("use_rviz")
     use_sim_time = LaunchConfiguration("use_sim_time")

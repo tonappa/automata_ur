@@ -2,10 +2,8 @@
 
 #include "ur_automata_scan/scan_sequence_planner.hpp"
 
-// La DP deve preferire il percorso globalmente piu' corto, non quello
-// localmente piu' vicino (greedy). Start (0,0); layer 0: A=(0.1,0) vicino,
-// B=(0,1) lontano; layer 1: solo (0,1.1). Greedy sceglie A e poi paga 1.10;
-// il totale via A e' 1.20, via B e' 1.10 -> la DP deve scegliere B.
+// The DP picks the globally shortest chain, not the greedy one: via the near
+// A the total is 1.20, via the far B it is 1.10.
 TEST(SequencePlanner, PrefersGlobalPathOverGreedy)
 {
   std::vector<std::vector<SeqCandidate>> layers = {
@@ -19,8 +17,7 @@ TEST(SequencePlanner, PrefersGlobalPathOverGreedy)
   EXPECT_NEAR(r.total_cost, 1.1, 1e-9);
 }
 
-// Un layer vuoto (waypoint irraggiungibile) viene scavalcato: -1 per lui,
-// la catena continua tra i layer vicini.
+// An empty layer is skipped (-1) and the chain goes on.
 TEST(SequencePlanner, SkipsEmptyLayers)
 {
   std::vector<std::vector<SeqCandidate>> layers = {
@@ -35,8 +32,7 @@ TEST(SequencePlanner, SkipsEmptyLayers)
   EXPECT_NEAR(r.total_cost, 1.5, 1e-9);
 }
 
-// extra_cost entra nella scelta: due candidati identici nei giunti, vince
-// quello con penalita' minore.
+// With identical joints, the lower extra_cost wins.
 TEST(SequencePlanner, UsesExtraCost)
 {
   std::vector<std::vector<SeqCandidate>> layers = {
@@ -46,9 +42,7 @@ TEST(SequencePlanner, UsesExtraCost)
   EXPECT_EQ(r.chosen[0], 1);
 }
 
-// Un arco bloccato viene evitato se esiste un'alternativa: il candidato
-// piu' vicino (0.1) e' raggiungibile solo con un tratto bloccato, quindi
-// vince l'altro (0.5).
+// A blocked segment is avoided when there is an alternative.
 TEST(SequencePlanner, AvoidsBlockedEdges)
 {
   std::vector<std::vector<SeqCandidate>> layers = {
@@ -61,8 +55,7 @@ TEST(SequencePlanner, AvoidsBlockedEdges)
   EXPECT_EQ(r.chosen[0], 1);
 }
 
-// Se TUTTI gli archi verso un layer sono bloccati, il waypoint non viene
-// scartato: si paga la penalita' e si va comunque.
+// If every segment to a layer is blocked, the penalty is paid, the waypoint kept.
 TEST(SequencePlanner, BlockedEdgesAreNotForbidden)
 {
   std::vector<std::vector<SeqCandidate>> layers = { { {{1.0}} } };
@@ -74,9 +67,7 @@ TEST(SequencePlanner, BlockedEdgesAreNotForbidden)
   EXPECT_NEAR(r.total_cost, 1001.0, 1e-9);
 }
 
-// A custom edge cost replaces joint_l2. Start (0); layer 0: A = 0.1, B = 0.5.
-// With joint_l2 A wins; with a cost that makes A expensive (e.g. a big arm
-// swing that the joints alone do not show) B wins, and the total is that cost.
+// A custom edge cost replaces joint_l2.
 TEST(SequencePlanner, UsesCustomEdgeCost)
 {
   std::vector<std::vector<SeqCandidate>> layers = {
@@ -93,7 +84,7 @@ TEST(SequencePlanner, UsesCustomEdgeCost)
   EXPECT_NEAR(r.total_cost, 0.7, 1e-9);
 }
 
-// Nessun wrap: da +179 a -179 gradi sono ~358 gradi di rotazione.
+// No wrap: +179 -> -179 degrees is ~358 degrees.
 TEST(JointL2, NoWrapAround)
 {
   double d = joint_l2({3.1}, {-3.1});

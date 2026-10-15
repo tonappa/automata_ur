@@ -1,38 +1,8 @@
-// scan_tsp_node: experimental scan planner, to compare with scan_sequence_node.
-//
-//   mode:=plan     Plans the whole scan WITHOUT moving the robot and saves it:
-//     1. IK candidates of every waypoint (same filters as scan_sequence_node);
-//     2. visit order: order:=tsp   OR-Tools TSP on the waypoints (RoboTSP-like:
-//                                  order first, IK configurations after),
-//                     order:=gtsp  OR-Tools generalized TSP on all the IK
-//                                  candidates (order and configuration together),
-//                     order:=sectors  the order of scan_sequence_node,
-//                     order:=alternate  from the sectors solution, TSP on the
-//                                  chosen configurations and DP in turn;
-//     3. IK configurations for that order: layered DP (ur_automata_scan) with
-//        lazy checks of the straight joint-space segments;
-//     4. every motion planned with MoveIt (same planner chain, retries and
-//        recovery poses as scan_sequence_node), durations measured;
-//     5. refinement: the measured durations replace the estimates and 2-4 are
-//        repeated; the best measured plan is saved to plan_file.
-//   mode:=execute  Loads plan_file, checks it against the current cell, then
-//     waits for an object name on start_topic and executes the plan. If the
-//     robot is not in the start state of the plan, it first goes there with a
-//     planned motion. On every waypoint it publishes the photo request with
-//     the camera pose on capture_topic
-//     ("acquire: object_1; camera pose: [x, y, z, qx, qy, qz, qw]; waypoint_5"),
-//     then waits on status_topic for the camera state (JSON) "measure_complete"
-//     with the same object and waypoint. At the end it publishes
-//     "scan3D <object>" and waits for the next object (topics in the scan3d:
-//     section of automata_config.yaml):
-//       ros2 topic pub --once /scan3d/start std_msgs/msg/String "{data: object_1}"
-//       ros2 topic pub --once /scan3d/status std_msgs/msg/String "{data: '{\"state\": \"measure_complete\", \"object\": \"object_1\", \"waypoint\": 1}'}"
-//       ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}   (stops after the current motion)
-//       ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}   (resumes)
-//
-// Costs are durations (s). The estimate of a segment is the Pilz PTP time on
-// the straight joint line (see ptp_time); the orders found are heuristic
-// solutions, not proven optimal.
+// scan_tsp_node: 3D scan planned offline and executed on request.
+//   mode:=plan     plans the whole scan without moving the robot, saves plan_file
+//   mode:=execute  loads and checks plan_file, then runs one scan per object on
+//                  start_topic with the photo handshake (scan3d: topics)
+// Method: package README; usage and topics: docs/scan.md, docs/mqtt.md.
 
 #include <algorithm>
 #include <atomic>
@@ -85,9 +55,8 @@ static std::mutex g_photo_mutex;
 static std::string g_photo_object;                 // photo we wait for: object name ...
 static int g_photo_waypoint = 0;                   // ... and waypoint number, 0 = none
 
-// Camera state on status_topic, e.g.
-//   {"state": "measure_complete", "object": "object_3", "waypoint": 5, "timestamp": ...}
-// Sets g_photo_done when it is the end of the photo we wait for.
+// Camera state (JSON) on status_topic: sets g_photo_done on "measure_complete"
+// for the object and waypoint we wait for.
 static void on_camera_status(const std_msgs::msg::String::SharedPtr msg)
 {
   nlohmann::json status = nlohmann::json::parse(msg->data, nullptr, false);   // false: no exceptions
@@ -113,9 +82,7 @@ static double seconds_since(std::chrono::steady_clock::time_point t0)
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
-// ============================================================================
-// Scene fingerprint: one axis-aligned box per world object
-// ============================================================================
+// One axis-aligned box per world object, saved with the plan.
 static std::vector<SceneObjectBox> scene_boxes(const planning_scene::PlanningScene & scene)
 {
   std::vector<SceneObjectBox> result;
@@ -151,11 +118,7 @@ static std::vector<SceneObjectBox> scene_boxes(const planning_scene::PlanningSce
   return result;
 }
 
-// ============================================================================
-// Planned motions
-// ============================================================================
-// One planned motion (a leg); a segment between two nodes of the tour is one
-// leg, or two when it passes through a recovery pose.
+// One planned motion; a segment of the tour is one leg, or two through a recovery pose.
 struct Leg {
   std::string label;
   int waypoint = -1;                 // waypoint reached at the end, -1 = none
@@ -189,7 +152,6 @@ static double trajectory_joint_motion(const moveit_msgs::msg::RobotTrajectory & 
   return total;
 }
 
-// Everything the planning loop needs to call MoveIt.
 struct PlanContext {
   MoveGroup * move_group = nullptr;
   const moveit::core::JointModelGroup * jmg = nullptr;
@@ -201,8 +163,7 @@ struct PlanContext {
   rclcpp::Logger logger = rclcpp::get_logger("scan_tsp_node");
 };
 
-// Plans one motion from `from` to `to` (joint configurations, group order),
-// with the planner chain and then the retries, like scan_sequence_node.
+// Plans one motion between two joint configurations: planner chain, then retries.
 static bool plan_leg(PlanContext & ctx, const std::vector<double> & from, const std::vector<double> & to,
                      bool allow_circ, Leg & leg)
 {
@@ -236,11 +197,8 @@ static bool plan_leg(PlanContext & ctx, const std::vector<double> & from, const 
   return true;
 }
 
-// ============================================================================
-// Nodes of the tour: global candidate ids
-// ============================================================================
-// Every IK candidate has a global id; START and HOME are the two fixed ends of
-// the tour (the scan starts from the current state and ends at the home pose).
+// Every IK candidate has a global id; START (current state) and HOME are the
+// fixed ends of the tour.
 constexpr int START = -1;
 constexpr int HOME  = -2;
 
@@ -250,9 +208,6 @@ struct CandidateTable {
   std::vector<const std::vector<double> *> joints;
 };
 
-// ============================================================================
-// MAIN
-// ============================================================================
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
@@ -275,12 +230,11 @@ int main(int argc, char ** argv)
       res->success = true;
       res->message = "execution paused (stops after the current motion)";
     });
-  // mode:=execute shows the waypoints of the plan. Created here, well before
-  // the first publication, so RViz has time to connect.
+  // Created early so RViz is connected before the first publication.
   auto markers_pub = node->create_publisher<visualization_msgs::msg::MarkerArray>(
     "/scan_waypoints_markers", 10);
 
-  // --- Parameters: same names as scan_sequence_node, plus the plan ones ---
+  // Same names as scan_sequence_node, plus the plan ones.
   node->declare_parameter<std::string>("global_frame",              "world");
   node->declare_parameter<std::string>("planning_group",            "ur_manipulator");
   node->declare_parameter<std::string>("end_effector_link",         "ee_automata_tcp");
@@ -323,30 +277,25 @@ int main(int argc, char ** argv)
   // tsp | gtsp | sectors | alternate
   node->declare_parameter<std::string>("order",                "alternate");
   node->declare_parameter<std::string>("plan_file",            "");
-  // OR-Tools search time per solve (s).
+  // s per OR-Tools solve
   node->declare_parameter<double>     ("tsp_time_limit",       10.0);
-  // Extra rounds with measured durations after the first plan (0 = none).
+  // extra rounds with the measured durations (0 = none)
   node->declare_parameter<int>        ("refine_iterations",    3);
-  // Estimated extra time (s) of a segment whose straight line is blocked,
-  // until its real (OMPL) duration is measured.
+  // s added to a blocked straight line until its real duration is measured
   node->declare_parameter<double>     ("blocked_penalty_s",    10.0);
-  // order:=tsp|gtsp: before solving, check the straight lines toward this many
-  // cheapest neighbour waypoints (0 = no check, costs ignore collisions).
+  // tsp/gtsp: straight lines checked toward this many cheapest neighbours (0 = off)
   node->declare_parameter<int>        ("tsp_check_neighbours", 10);
-  // execute: largest joint difference (rad) between the current state and
-  // the state the plan starts from; above it the robot first moves there.
+  // execute: rad from the plan start state above which the robot first moves there
   node->declare_parameter<double>     ("start_tolerance_rad",  0.01);
-  // execute: speed relative to the plan, 1.0 = as planned, 0.5 = half speed.
-  // Only slower: values above 1.0 are refused.
+  // execute: fraction of the planned speed, max 1.0
   node->declare_parameter<double>     ("speed",                1.0);
-  // execute: topics of the photo handshake (scan3d: in automata_config.yaml).
+  // execute: photo handshake topics (scan3d: in automata_config.yaml)
   node->declare_parameter<std::string>("start_topic",          "/scan3d/start");
   node->declare_parameter<std::string>("capture_topic",        "/scan3d/acquire");
   node->declare_parameter<std::string>("status_topic",         "/scan3d/status");
   node->declare_parameter<std::string>("done_topic",           "/scan3d/done");
   node->declare_parameter<bool>       ("wait_for_next",        true);
-  // execute: std_msgs/Bool topic of the scan lights (a robot digital output
-  // through ur_io_ros2_manager), on for the whole scan. "" = no lights.
+  // execute: std_msgs/Bool of the scan lights (digital output), "" = none
   node->declare_parameter<std::string>("light_topic",          "/scan3d/light");
 
   const std::string global_frame    = node->get_parameter("global_frame").as_string();
@@ -397,7 +346,7 @@ int main(int argc, char ** argv)
   const double speed = node->get_parameter("speed").as_double();
   if (speed <= 0.0 || speed > 1.0) return fail("speed must be greater than 0 and at most 1.0.");
 
-  // --- Waypoints: same generator and parameters as scan_sequence_node ---
+  // Waypoints: same generator and parameters as scan_sequence_node.
   ScanConfig cfg;
   cfg.center = Eigen::Vector3d(center_vec[0], center_vec[1], center_vec[2]);
   cfg.radius = radius;
@@ -429,8 +378,7 @@ int main(int argc, char ** argv)
     lower_pts = generate_waypoints(cfg);
   }
 
-  // Settings that decide the waypoints and which IK solutions are valid: saved
-  // with the plan and compared before executing it.
+  // Saved with the plan and compared before executing it.
   std::map<std::string, std::string> waypoint_params;
   for (const char * name : {"scan_hemisphere", "scan_direction", "scan_num_rings", "scan_points_per_ring",
                             "scan_num_arc", "scan_points_per_arc", "scan_equator_exclusion_upper_deg",
@@ -442,7 +390,6 @@ int main(int argc, char ** argv)
     waypoint_params[name] = node->get_parameter(name).value_to_string();
   }
 
-  // --- MoveIt ---
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
   std::thread spinner([&executor]() { executor.spin(); });
@@ -474,8 +421,8 @@ int main(int argc, char ** argv)
   std::vector<double> current_joints;
   current.copyJointGroupPositions(jmg, current_joints);
 
-  // Joint limits of the model: velocity from the URDF, acceleration from
-  // joint_limits.yaml (the launch file passes it as robot_description_planning).
+  // Velocity limits from the URDF, accelerations from joint_limits.yaml
+  // (robot_description_planning).
   std::vector<double> max_velocity, max_acceleration;
   for (const std::string & name : joint_names) {
     const moveit::core::VariableBounds & b = model->getVariableBounds(name);
@@ -488,7 +435,6 @@ int main(int argc, char ** argv)
     max_acceleration.push_back(b.max_acceleration_);
   }
 
-  // Visit list, numbered like the table of scan_sequence_node (#N).
   std::vector<geometry_msgs::msg::Pose> waypoints;
   std::vector<SectorBlock> blocks;
   if (num_sectors > 0) {
@@ -516,9 +462,7 @@ int main(int argc, char ** argv)
     camera = st.getGlobalLinkTransform(ee_link);
   };
 
-  // ==========================================================================
-  // EXECUTE: load, check, run
-  // ==========================================================================
+  // EXECUTE: load, check, run.
   if (mode == "execute") {
     const auto load_t0 = std::chrono::steady_clock::now();
     ScanPlan saved;
@@ -535,7 +479,6 @@ int main(int argc, char ** argv)
                 rec.created.c_str(), d.method.c_str(), rec.segments.size(),
                 rec.waypoints_reached, rec.waypoints_total);
 
-    // Every reason is collected, then reported together.
     std::vector<std::string> reasons;
     char buf[256];
     if (rec.planning_group != planning_group || rec.end_effector_link != ee_link || rec.global_frame != global_frame) {
@@ -578,11 +521,9 @@ int main(int argc, char ** argv)
         reasons.push_back(buf);
       }
     }
-    // Start state: if the robot is not there, every scan first goes there.
     if (d.start_joints.size() != current_joints.size()) {
       reasons.push_back("stato iniziale del piano assente o con un numero di giunti diverso");
     }
-    // Scene objects.
     if (!scene) {
       reasons.push_back("planning scene non disponibile: impossibile controllare scena e collisioni");
     } else {
@@ -660,9 +601,8 @@ int main(int argc, char ** argv)
     std::printf("Controlli superati. Caricamento %.3f s, controlli %.3f s. Movimenti del piano: %.1f s (speed %.2f)\n",
                 load_s, check_s, motion_s, speed);
 
-    // --- Photo numbers: 1 at the north pole ... N at the south pole ---
-    // The waypoints of the plan are sorted by height (higher ring first) and,
-    // inside a ring, by angle around the scan center (counterclockwise from +X).
+    // Photo numbers: 1 at the north pole ... N at the south pole, ring by ring,
+    // counterclockwise from +X inside a ring.
     std::vector<int> visited;
     for (const RecordedSegment & seg : rec.segments) {
       if (seg.waypoint >= 0) visited.push_back(seg.waypoint);
@@ -682,7 +622,6 @@ int main(int argc, char ** argv)
     for (size_t k = 0; k < visited.size(); ++k) photo_number[visited[k]] = static_cast<int>(k) + 1;
     std::printf("Foto numerate da 1 (polo nord) a %zu (polo sud).\n", visited.size());
 
-    // --- Topics of the photo handshake (scan3d: in automata_config.yaml) ---
     auto capture_pub  = node->create_publisher<std_msgs::msg::String>(capture_topic, 10);
     auto done_pub     = node->create_publisher<std_msgs::msg::String>(done_topic, 10);
     auto start_sub = node->create_subscription<std_msgs::msg::String>(
@@ -697,7 +636,6 @@ int main(int argc, char ** argv)
       });
     auto status_sub = node->create_subscription<std_msgs::msg::String>(status_topic, 10, on_camera_status);
 
-    // Scan lights: true at the start of a scan, false at the end.
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr light_pub;
     if (!light_topic.empty()) {
       light_pub = node->create_publisher<std_msgs::msg::Bool>(light_topic, 10);
@@ -715,8 +653,8 @@ int main(int argc, char ** argv)
       std::printf("Luci %s (%s)\n", on ? "accese" : "spente", light_topic.c_str());
       std::fflush(stdout);
     };
-    // Lights off at startup: a scan stopped with Ctrl+C leaves them on. Wait
-    // up to 5 s for the subscriber, or this first message is lost.
+    // Lights off at startup (Ctrl+C mid-scan leaves them on). Wait up to 5 s for
+    // the subscriber, or the message is lost.
     if (light_pub) {
       const auto wait_t0 = std::chrono::steady_clock::now();
       while (rclcpp::ok() && light_pub->get_subscription_count() == 0 && seconds_since(wait_t0) < 5.0) {
@@ -730,11 +668,9 @@ int main(int argc, char ** argv)
                 done_topic.c_str(), light_topic.empty() ? "(none)" : light_topic.c_str(),
                 wait_for_next ? "true" : "false");
 
-    // Gray camera frustums on the waypoints of the plan.
     visualization_msgs::msg::MarkerArray markers = make_frustum_markers(rec, global_frame);
     publish_first_frustums(markers_pub, markers);
 
-    // One scan per object name received on start_topic, until Ctrl+C.
     while (rclcpp::ok()) {
       std::printf("\nIn attesa dell'oggetto su %s, es.:\n"
                   "  ros2 topic pub --once %s std_msgs/msg/String \"{data: object_1}\"\n",
@@ -755,12 +691,10 @@ int main(int argc, char ** argv)
       std::fflush(stdout);
       set_lights(true);
 
-      // Every frustum gray again.
       markers = make_frustum_markers(rec, global_frame);
       markers_pub->publish(markers);
 
-      // If the robot is not in the start state of the plan, it first goes there
-      // with a planned motion, slowed like the rest. Not counted in the time.
+      // Not in the start state of the plan: go there first (not counted in the time).
       bool move_to_start = false;
       moveit::core::RobotStatePtr now_ptr = move_group.getCurrentState(5.0);
       if (now_ptr) {
@@ -770,7 +704,7 @@ int main(int argc, char ** argv)
           if (std::abs(d.start_joints[k] - now_joints[k]) > start_tolerance) move_to_start = true;
         }
       } else {
-        move_to_start = true;   // state unknown: let the planned motion start from wherever it is
+        move_to_start = true;   // state unknown
       }
       bool completed = true;
       if (move_to_start) {
@@ -801,7 +735,6 @@ int main(int argc, char ** argv)
         std::fflush(stdout);
       }
 
-      // The execution time starts after the motion to the start state.
       const auto exec_t0 = std::chrono::steady_clock::now();
       double photo_wait_s = 0.0;
       int waypoints_done = 0;
@@ -837,8 +770,7 @@ int main(int argc, char ** argv)
           const int n = photo_number[seg.waypoint];
           const std::vector<double> & c = seg.camera_pose;   // x y z qx qy qz qw, global_frame
 
-          // The photo we wait for is set before the request, so an older
-          // "measure_complete" does not count.
+          // Set before the request, so an older "measure_complete" does not count.
           {
             std::lock_guard<std::mutex> lock(g_photo_mutex);
             g_photo_object = object_name;
@@ -846,7 +778,6 @@ int main(int argc, char ** argv)
             g_photo_done = false;
           }
 
-          // Photo request with the camera pose of this waypoint.
           char text[512];
           std::snprintf(text, sizeof(text),
                         "acquire: %s; camera pose: [%.4f, %.4f, %.4f, %.5f, %.5f, %.5f, %.5f]; waypoint_%d",
@@ -876,7 +807,7 @@ int main(int argc, char ** argv)
         std::fflush(stdout);
       }
 
-      // Back in home (or stopped): lights off, then done to the orchestrator.
+      // Lights off, then done.
       set_lights(false);
       std_msgs::msg::String done_msg;
       done_msg.data = "scan3D " + object_name;
@@ -893,9 +824,7 @@ int main(int argc, char ** argv)
     return shutdown(0);
   }
 
-  // ==========================================================================
   // PLAN
-  // ==========================================================================
   const auto plan_t0 = std::chrono::steady_clock::now();
 
   // --- 1. IK candidates ---
@@ -1011,8 +940,8 @@ int main(int argc, char ** argv)
     return "wp " + std::to_string(table.owner[id].first);
   };
 
-  // Plans the segment a -> b (cached): direct, else through the recovery pose
-  // of b's hemisphere, else through home (recover_to_safe_pose of scan_sequence_node).
+  // Segment a -> b (cached): direct, else through the recovery pose of b's
+  // hemisphere, else through home.
   auto plan_segment = [&](int a, int b) -> const Segment & {
     auto it = planned.find({a, b});
     if (it != planned.end()) return it->second;
@@ -1047,7 +976,6 @@ int main(int argc, char ** argv)
     return planned.emplace(std::make_pair(a, b), seg).first->second;
   };
 
-  // One full candidate plan: the tour as global ids (START ... HOME).
   struct Tour {
     std::vector<int> ids;          // START, candidates..., HOME
     std::vector<int> visit_order;  // waypoints, in visit order
@@ -1063,9 +991,8 @@ int main(int argc, char ** argv)
   };
 
   // --- 2 + 3. Order, then IK configurations with the lazy DP ---
-  // Layered DP (with lazy segment checks) for a visit order. `chain`
-  // receives START, the chosen candidate of each waypoint, HOME. Returns the
-  // DP cost (estimated seconds + pitch preference).
+  // `chain` receives START, one candidate per waypoint, HOME. Returns the DP
+  // cost (estimated s + pitch preference).
   auto run_dp = [&](const std::vector<int> & order, std::vector<int> & chain, int & dp_iterations) -> double {
     // Layers in visit order, plus a last layer with the home pose.
     std::vector<std::vector<SeqCandidate>> layers;
@@ -1110,9 +1037,8 @@ int main(int argc, char ** argv)
     if (order_method == "sectors") {
       order = reachable;
     } else if (order_method == "tsp") {
-      // Nodes: 0 = start, 1..n = reachable waypoints, n + 1 = home. Cost of
-      // i -> j = cheapest pair of their candidates (a lower bound of the real
-      // segment: the DP chooses the candidates afterwards).
+      // Nodes: 0 = start, 1..n = waypoints, n + 1 = home. Cost = cheapest pair
+      // of their candidates (lower bound: the DP picks them afterwards).
       const int n = static_cast<int>(reachable.size());
       const int size = n + 2;
       std::vector<int64_t> cost(static_cast<size_t>(size) * size, 0);
@@ -1151,12 +1077,8 @@ int main(int argc, char ** argv)
           best_cost[static_cast<size_t>(x) * size + y] = best_pair(x, y, a, b);
         }
       }
-      // Collision-aware costs toward the nearest nodes: the cheapest pair is
-      // checked with the straight joint line; if it collides the penalty
-      // applies and the next pair is tried. Without this the TSP jumps
-      // between the hemispheres through the platform (straight lines blocked,
-      // the segments go to OMPL). Far nodes keep the optimistic cost: the tour
-      // does not use them.
+      // Toward the nearest nodes the straight line is checked (blocked = penalty,
+      // next pair): otherwise the TSP jumps between hemispheres through the platform.
       for (int x = 0; x <= n && tsp_check_neighbours > 0; ++x) {
         std::vector<std::pair<double, int>> near;
         for (int y = 1; y < size; ++y) {
@@ -1186,11 +1108,8 @@ int main(int argc, char ** argv)
         for (int k : r.nodes) order.push_back(reachable[k - 1]);
       }
     } else if (order_method == "alternate") {
-      // Start from the solution of scan_sequence_node (sector order + DP),
-      // then alternate: TSP on the configurations chosen so far (their real
-      // segment costs, straight lines checked toward the nearest ones), DP on
-      // the new order. A step is kept only if the DP cost goes down, so the
-      // estimate never gets worse than the starting solution.
+      // From the sector solution, alternate TSP on the chosen configurations and
+      // DP on the new order; a step is kept only if the DP cost goes down.
       order = reachable;
       std::vector<int> chain;
       int it = 0;
@@ -1233,8 +1152,7 @@ int main(int argc, char ** argv)
         current_cost = new_cost;
       }
     } else {   // gtsp
-      // Nodes: 0 = start, 1..N = every candidate, N + 1 = home; one cluster
-      // per waypoint. OR-Tools picks the order and the candidate together.
+      // Nodes: 0 = start, 1..N = every candidate, N + 1 = home; one cluster per waypoint.
       const int n_cand = static_cast<int>(table.owner.size());
       const int size = n_cand + 2;
       auto id_of = [&](int node_index) {
@@ -1250,10 +1168,7 @@ int main(int argc, char ** argv)
           cost[static_cast<size_t>(x) * size + y] = static_cast<int64_t>(std::llround(c * 1000.0));
         }
       }
-      // Collision-aware costs, as for order:=tsp but per candidate: from each
-      // node, the straight lines toward its cheapest candidates are checked
-      // (at most 3 per waypoint, tsp_check_neighbours waypoints); a blocked
-      // line gets the penalty in the matrix.
+      // As for tsp, per candidate (at most 3 per waypoint).
       auto waypoint_of = [&](int node_index) {
         const int id = id_of(node_index);
         return id >= 0 ? table.owner[id].first : id;
@@ -1361,7 +1276,6 @@ int main(int argc, char ** argv)
     const std::vector<int> planned_ids = tour.ids;
     measure_tour(tour);
 
-    // How well the estimates describe the planned motions.
     int off = 0;
     double abs_error = 0.0;
     for (size_t k = 1; k < planned_ids.size(); ++k) {

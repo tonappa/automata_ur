@@ -4,8 +4,7 @@
 
 #include "ur_automata_scan/sphere_waypoint_generator.hpp"
 
-// Same sphere as the reference scan: center C, radius 0.30, full sphere 4 x 15
-// with staggered and adaptive rings, robot base at the origin.
+// Reference sphere: radius 0.30, full 4 x 15, staggered + adaptive, base at origin.
 static ScanConfig reference_config()
 {
   ScanConfig cfg;
@@ -28,9 +27,7 @@ static Eigen::Vector3d pos(const geometry_msgs::msg::Pose & p)
   return Eigen::Vector3d(p.position.x, p.position.y, p.position.z);
 }
 
-// Every waypoint is kept exactly once, there are 4 sectors per hemisphere, the
-// lower hemisphere starts right after the upper one, and inside a sector two
-// consecutive points are neighbours on the sphere (no jump across it).
+// Every waypoint once, 4 sectors per hemisphere, no jumps inside a sector.
 TEST(Sectors, KeepsAllPointsAndGroupsThemBySector)
 {
   ScanConfig cfg = reference_config();
@@ -71,8 +68,7 @@ TEST(Sectors, KeepsAllPointsAndGroupsThemBySector)
   }
 }
 
-// Sector 0 faces the robot: all its points (except the pole) are on the base
-// side of the center, within +-45 degrees of the center -> base direction.
+// Sector 0 faces the robot (within +-45 degrees of center -> base).
 TEST(Sectors, FirstSectorFacesTheRobot)
 {
   ScanConfig cfg = reference_config();

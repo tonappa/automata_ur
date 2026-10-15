@@ -10,6 +10,8 @@
 - [Collision scene](#collision-scene)
 - [The older sector method](#the-older-sector-method-scan_sequence_node)
 - [Measured results](#measured-results)
+- [Implementation notes](#implementation-notes)
+- [Settings history](#settings-history)
 
 ## How a scan is built
 
@@ -232,3 +234,87 @@ the first full scan completed 79 / 79.
 Open points: 3–5 segments, mostly in the lower hemisphere near the stem, still
 go to OMPL and are the largest motions; a set-back path (camera backs away,
 moves, comes back) was tried and is never collision-free in this cell.
+
+## Implementation notes
+
+Details of the code worth knowing before changing it.
+
+- **IK seeds**: the 8 TRAC-IK seeds (wrist, elbow, shoulder flipped) are an
+  approximation of the 8 UR branches; if all branches must be found for sure,
+  use the analytic UR IK instead.
+- **Second IK attempt** near the reach limit: 20× longer timeout, also seeded
+  from the 8 branches of the start pose (needed with the sector order on the
+  far side).
+- **Lazy DP**: when a segment turns out blocked, all pairs between the two
+  layers are checked at once; checking one pair per iteration ran out of
+  iterations and left segments to OMPL.
+- **TSP costs** toward the nearest neighbours (`tsp_check_neighbours`) include
+  the collision check of the straight line: without it the tour jumps between
+  hemispheres through the platform.
+- **PTP time estimate**: Pilz samples trajectories every 0.1 s; the node
+  compares its estimate with the planned durations.
+- **Pilz CIRC**: a plan is rejected when the arc ends on another IK branch
+  (fixed 0.01 rad threshold; branches are tenths of a radian apart).
+- **Arm envelope** of the dry run: link origins only, plus a fixed 0.10 m;
+  use the collision meshes if that margin turns out too small.
+- **`setWorkspace`** only bounds OMPL sampling, it is not a TCP limit.
+- `scan_replay_node` has no photo handshake: that is `scan_tsp_node`.
+
+## Settings history
+
+Why the current values of `automata_config.yaml` were chosen (URSim, radius
+0.30 m, full sphere 4 × 15, `scan_sequence_node` unless noted).
+
+**Scan center**
+
+| `center` | result |
+|---|---|
+| `[0.133, 0.40, 0.504]` | farthest point 0.955 m from the base: out of reach |
+| `[0.133, 0.35, 0.504]` | 0.927 m, 9 mm out of reach |
+| `[0.133, 0.35, 0.470]` | 82 / 82, 140 s, 2290 IK candidates |
+| `[0.0, 0.374, 0.470]` | centered on the base axis: 82 / 82 but 181 s, the pan joint turns twice as much |
+| `[0.133, 0.365, 0.470]` | 82 / 82, 132 s, 1977 candidates: the low ring gains, the others lose |
+| **`[0.133, 0.375, 0.455]`** | 82 / 82, 139 s, 2457 candidates: same distance, flatter and lower sphere → **chosen**. Waypoints 46/47 keep 1–2 candidates (end effector vs forearm) wherever the center is |
+
+Same center, later: 82 / 82, 124 s with the first wall (2026-09-08);
+`platform01.stl` 79 / 82, 159 s (wp 38, 54, 60 collide with the platform);
+\+ line-of-sight check 78 / 82, 171 s; rerun 2026-09-29 78 / 82, 163 s.
+
+**Wall-mounted robot** (tried and dropped, back to the table): base z 0.455 →
+63 / 82, 276 s, the 19 lost all in the lower hemisphere (arm through the disk);
+base z 0.50 with the wall in the scene → 82 / 82 enumerated but 80 % of the
+segments blocked, scan not run.
+
+**Platform meshes**: `platform02.stl` (2026-10-09) is `platform01.stl` with the
+stem 59 mm shorter, so its feet stand on the table with `center.z` 0.455;
+`platform01.stl` and `disk.stl` share the old reference and would sit 5.9 cm
+too high.
+
+**Margins and walls**: `table_margin` 0.02 loses wp 46 (under the disk, robot
+side), so it is 0. The walls are the arm envelope printed by the dry run
+(sectors 4, offset 45) + 0.10 m; `right_x` raised to 0.76 because the
+end-effector mesh reaches x 0.71 at `lower_scan_ready`.
+
+**Planners**: `[pilz_circ, pilz_ptp, stomp, ompl]` took 262 s against 143 s
+(arcs slower than lines, 25 CIRC failures on wrist acceleration limits, 5
+STOMP timeouts): back to line + OMPL, STOMP removed. `RRTstar` replaced
+`RRTConnect` as OMPL algorithm (2026-09-29): RRTConnect returned the first
+random path, up to 2.7 m of elbow travel; RRTstar uses the whole
+`planning_time` to shorten it. The retries use `RRTConnect` because RRTstar
+found no path to wp 13 (under the platform) in 15 + 30 + 60 s.
+
+**Collision check step**: `longest_valid_segment_fraction` in
+`ompl_planning.yaml` is 0.001 (≈ 1.5°). With 0.01 (≈ 15°) the end effector
+moved up to ~20 cm between two checks, a 4 mm disk was missed and move_group
+rejected the plan (`ValidateSolution`).
+
+**Pilz Cartesian limits**: with acceleration / deceleration at 2.25 / −5.0
+(Setup Assistant defaults) the CIRC arcs on the sphere pushed `shoulder_pan`
+and `elbow` to 6.6–7.0 rad/s² against the limit of 5 in `joint_limits.yaml`
+and the arc was rejected (dp10 run): now 1.5 / −1.5 in
+`pilz_cartesian_limits.yaml`.
+
+**Visit order**: with 4 sectors the dry run sends 4 segments to OMPL instead
+of 9 with the ring order. Tried and dropped on 2026-09-29: a home pose per
+sector (never chosen by the DP), per-joint weights with an IK-branch penalty
+instead of the Cartesian cost (20 forecast swings vs 13).

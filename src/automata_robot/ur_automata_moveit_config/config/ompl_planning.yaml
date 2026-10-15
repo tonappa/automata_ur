@@ -12,9 +12,8 @@ response_adapters:
   - default_planning_response_adapters/ValidateSolution
   - default_planning_response_adapters/DisplayMotionPath
 
-# Nomi usati dai nodi di scansione: <algoritmo>kConfigDefault
-# (scan.ompl_algorithm in automata_config.yaml). Senza questa lista OMPL
-# ignora il nome richiesto e usa sempre RRTConnect.
+# <algorithm>kConfigDefault names used by scan.ompl_algorithm: a name missing
+# here makes OMPL fall back to RRTConnect.
 planner_configs:
   RRTConnectkConfigDefault:
     type: geometric::RRTConnect
@@ -83,10 +82,6 @@ ur_manipulator:
     - BFMTkConfigDefault
     - PDSTkConfigDefault
     - STRIDEkConfigDefault
-  # Passo dei controlli di collisione lungo un tratto, come frazione
-  # dell'estensione dello spazio dei giunti (~26 rad per l'UR5e).
-  # Default OMPL 0.01 = ~0.26 rad = ~15 gradi fra un controllo e l'altro:
-  # l'end effector percorre ~20 cm e una piastra da 4 mm passa inosservata
-  # (poi ValidateSolution la trova e scarta il piano: INVALID_MOTION_PLAN).
-  # 0.001 = ~1.5 gradi, allineato al check dei tratti in scan_sequence_node.
+  # Collision check step along a path (~1.5 deg). The default 0.01 (~15 deg)
+  # misses the 4 mm platform disk.
   longest_valid_segment_fraction: 0.001

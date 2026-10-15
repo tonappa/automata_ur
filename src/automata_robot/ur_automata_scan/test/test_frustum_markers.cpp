@@ -2,8 +2,7 @@
 
 #include "ur_automata_scan/frustum_markers.hpp"
 
-// One frustum per waypoint segment (not for "posa home"), gray at first,
-// green only for the segment that was reached.
+// One frustum per waypoint segment, green only once reached.
 TEST(FrustumMarkers, OnePerWaypointAndGreenWhenReached)
 {
   RecordedSegment home;

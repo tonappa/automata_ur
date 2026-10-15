@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-// Visit order found by OR-Tools (routing solver, one vehicle).
+// Visit order found by the OR-Tools routing solver.
 struct RouteResult {
   bool ok = false;
   std::vector<int> nodes;     // visited nodes, in order, start and end excluded
@@ -12,16 +12,10 @@ struct RouteResult {
   std::string status;         // OR-Tools search status, e.g. ROUTING_SUCCESS
 };
 
-// Open route from node `start` to node `end` through the other nodes of an
-// n x n cost matrix (row-major, cost[a * n + b] = cost from a to b, integers).
-//   clusters empty -> every node is visited once (TSP);
-//   clusters given -> exactly one node of each cluster is visited (generalized
-//                     TSP); nodes outside any cluster are not visited.
-// Search: PATH_CHEAPEST_ARC first solution, then guided local search until
-// time_limit_s. The result is a heuristic solution: OR-Tools does not prove it
-// optimal (status ROUTING_OPTIMAL would say so).
-// `initial` (optional): a route to start from (nodes in order, start and end
-// excluded); the local search then never returns a worse route.
+// Open route from `start` to `end` on an n x n cost matrix (row-major,
+// cost[a * n + b]). No clusters: TSP, every node once. Clusters: one node per
+// cluster (generalized TSP). Heuristic (guided local search for time_limit_s),
+// not proven optimal. `initial`: optional starting route, never worsened.
 RouteResult solve_route(const std::vector<int64_t> & cost, int n, int start, int end,
                         const std::vector<std::vector<int>> & clusters,
                         double time_limit_s,

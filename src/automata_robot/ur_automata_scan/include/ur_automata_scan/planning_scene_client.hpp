@@ -1,7 +1,5 @@
 #pragma once
 
-// Shared by scan_sequence_node and scan_replay_node.
-
 #include <chrono>
 #include <future>
 #include <memory>
@@ -12,14 +10,9 @@
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 
-// ============================================================================
-// Planning scene locale
-// ============================================================================
-// Copia locale della planning scene di move_group (oggetti del mondo + matrice
-// delle collisioni permesse). scan_sequence_node la usa per scartare le
-// soluzioni IK in collisione PRIMA di chiamare plan() (TRAC-IK non conosce la
-// scena); scan_replay_node per controllare i movimenti registrati prima di
-// eseguirli. La scena e' statica durante lo scan: si legge una volta sola.
+// Local copy of the move_group planning scene (world objects + allowed
+// collision matrix), read once: the IK solver does not know the scene, so
+// collisions are checked on this copy. nullptr if move_group does not answer.
 inline planning_scene::PlanningScenePtr fetch_planning_scene(
   rclcpp::Node::SharedPtr node,
   const moveit::core::RobotModelConstPtr & robot_model,
@@ -46,7 +39,7 @@ inline planning_scene::PlanningScenePtr fetch_planning_scene(
     Components::ALLOWED_COLLISION_MATRIX |
     Components::LINK_PADDING_AND_SCALING;
 
-  // Il nodo e' gia' spinnato dal thread executor: basta aspettare il future.
+  // The node is already spun by the executor thread: just wait.
   auto future = client->async_send_request(request);
   if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
     RCLCPP_ERROR(logger,

@@ -1,16 +1,8 @@
-# ROS <-> MQTT bridge (ika-rwth-aachen/mqtt_client), one for the whole cell:
-# 3D scan (scan_tsp_node) and HSI measurement (hsi_node). Started by
-# mqtt_bridge.launch.py (included by ur_automata_bringup.launch.py).
-# The ROS topics are the scan3d: and hsi: sections of automata_config.yaml; the
-# MQTT topics are the ones of the VimbaX camera app (mqtt_client_tutorial), of
-# the HSI app (hsi/commands, hsi/status) and of the orchestrator
-# (automata/<task>/start in, automata/<task>/done out). Start and done
-# are two separate MQTT topics: with only one, the bridge would get back its own
-# "done" message and forward it to /scan3d/start as a new scan.
-# The object name must not be only a number or true/false: the bridge would turn
-# it into Int32/Bool and the node (std_msgs/String) would not receive it.
-# primitive: true -> the std_msgs/String text goes to MQTT as it is, and back.
-# After a change: rebuild ur_automata_bringup.
+# ROS <-> MQTT bridge (ika-rwth-aachen/mqtt_client) for scan and HSI.
+# ROS names must match the scan3d: and hsi: sections of automata_config.yaml.
+# Start and done are separate MQTT topics, or the bridge would get back its own
+# done as a new start. primitive: a plain text payload made only of a number or
+# true/false arrives as Int32/Bool, not String.
 /**/*:
   ros__parameters:
     broker:

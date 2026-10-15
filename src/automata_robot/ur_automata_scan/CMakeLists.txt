@@ -18,7 +18,7 @@ find_package(std_srvs REQUIRED)
 find_package(geometric_shapes REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
-# ── Libreria geometrica pura (no ROS, solo Eigen + geometry_msgs) ─────────────
+# Sphere waypoints (Eigen + geometry_msgs, no ROS node)
 add_library(sphere_waypoint_generator
   src/sphere_waypoint_generator.cpp
 )
@@ -31,7 +31,7 @@ ament_target_dependencies(sphere_waypoint_generator
   Eigen3
 )
 
-# ── Libreria DP per la scelta della sequenza (pura, solo STL) ─────────────────
+# Sequence DP (STL only)
 add_library(scan_sequence_planner
   src/scan_sequence_planner.cpp
 )
@@ -40,7 +40,7 @@ target_include_directories(scan_sequence_planner PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-# ── Recorded scan file (calibration run -> replay), pure yaml-cpp ─────────────
+# Recorded scan file (yaml-cpp)
 add_library(scan_recording
   src/scan_recording.cpp
 )
@@ -50,7 +50,7 @@ target_include_directories(scan_recording PUBLIC
 )
 target_link_libraries(scan_recording yaml-cpp::yaml-cpp)
 
-# ── Scan node (offline enumeration + DP + planner chain, calibration run) ─────
+# Scan node
 add_executable(scan_sequence_node
   src/scan_sequence_node.cpp
 )
@@ -71,7 +71,7 @@ ament_target_dependencies(scan_sequence_node
   geometric_shapes
 )
 
-# ── Replay of a recorded scan (work sessions, no planning) ────────────────────
+# Replay node
 add_executable(scan_replay_node
   src/scan_replay_node.cpp
 )
@@ -88,7 +88,6 @@ ament_target_dependencies(scan_replay_node
   std_srvs
 )
 
-# ── Install ───────────────────────────────────────────────────────────────────
 install(
   DIRECTORY include/
   DESTINATION include

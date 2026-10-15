@@ -1,5 +1,4 @@
-"""Lancia il nodo scene_publisher leggendo i parametri da
-ur_automata_bringup/config/automata_config.yaml."""
+"""Collision scene of the cell, settings from automata_config.yaml."""
 
 import os
 import yaml

@@ -21,14 +21,13 @@ SeqResult choose_sequence(const std::vector<double> & start_joints,
   SeqResult result;
   result.chosen.assign(layers.size(), -1);
 
-  // Stato "precedente": all'inizio e' il solo punto di partenza, costo zero.
+  // Previous layer: at first only the start, cost zero.
   std::vector<double> prev_cost = {0.0};
   std::vector<std::vector<double>> prev_joints = {start_joints};
 
-  // back[i][c] = indice del candidato scelto nel layer non vuoto precedente
-  // per arrivare al candidato c del layer i con costo minimo.
+  // back[i][c] = best candidate of the previous non-empty layer to reach (i, c).
   std::vector<std::vector<int>> back(layers.size());
-  int last_layer = -1;   // ultimo layer non vuoto elaborato (-1 = punto di partenza)
+  int last_layer = -1;   // last non-empty layer (-1 = start)
 
   for (size_t i = 0; i < layers.size(); ++i) {
     const auto & layer = layers[i];
@@ -59,9 +58,9 @@ SeqResult choose_sequence(const std::vector<double> & start_joints,
     last_layer = static_cast<int>(i);
   }
 
-  if (last_layer < 0) return result;   // tutti i layer vuoti
+  if (last_layer < 0) return result;   // all layers empty
 
-  // Miglior candidato dell'ultimo layer, poi si risale la catena all'indietro.
+  // Best candidate of the last layer, then walk back.
   int best = 0;
   for (size_t c = 1; c < prev_cost.size(); ++c) {
     if (prev_cost[c] < prev_cost[best]) best = static_cast<int>(c);

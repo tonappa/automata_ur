@@ -20,11 +20,7 @@ namespace ur_automata_scene {
 
 namespace {
 
-// ------------------------------------------------------------------
-// Build a quaternion that rotates the Z axis (0,0,1) so that it points
-// from p1 toward p2. We use this to orient cylinder primitives, which
-// in MoveIt are aligned along their local Z axis.
-// ------------------------------------------------------------------
+// Rotation that turns the Z axis toward p1 -> p2 (MoveIt cylinders lie along Z).
 static geometry_msgs::msg::Quaternion rotation_z_to(const Eigen::Vector3d &p1,
                                                     const Eigen::Vector3d &p2) {
   Eigen::Vector3d direction = (p2 - p1).normalized();
@@ -59,9 +55,6 @@ static geometry_msgs::msg::Quaternion rotation_z_to(const Eigen::Vector3d &p1,
   return result;
 }
 
-// ------------------------------------------------------------------
-// Identity quaternion: no rotation at all.
-// ------------------------------------------------------------------
 static geometry_msgs::msg::Quaternion identity_quat() {
   geometry_msgs::msg::Quaternion q;
   q.x = 0.0;
@@ -71,9 +64,6 @@ static geometry_msgs::msg::Quaternion identity_quat() {
   return q;
 }
 
-// ------------------------------------------------------------------
-// Wrap a SolidPrimitive into a CollisionObject
-// ------------------------------------------------------------------
 static moveit_msgs::msg::CollisionObject
 make_obj(const std::string &id, const shape_msgs::msg::SolidPrimitive &shape,
          const Eigen::Vector3d &position,
@@ -96,9 +86,6 @@ make_obj(const std::string &id, const shape_msgs::msg::SolidPrimitive &shape,
   return obj;
 }
 
-// ------------------------------------------------------------------
-// Load a mesh from a file path
-// ------------------------------------------------------------------
 static shape_msgs::msg::Mesh load_mesh_msg(const std::string &file_path,
                                            double scale = 1.0) {
   Eigen::Vector3d scale_vec(scale, scale, scale);
@@ -113,9 +100,6 @@ static shape_msgs::msg::Mesh load_mesh_msg(const std::string &file_path,
   return mesh_msg;
 }
 
-// ------------------------------------------------------------------
-// Helper to build an ObjectColor entry.
-// ------------------------------------------------------------------
 static moveit_msgs::msg::ObjectColor
 make_color(const std::string &id, float r, float g, float b, float a = 1.0f) {
   moveit_msgs::msg::ObjectColor oc;
@@ -136,23 +120,16 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   scene.is_diff = true;
   const bool platform_sim = opt.platform_sim;
 
-  // ---------------- Table ----------------
   shape_msgs::msg::SolidPrimitive table_shape;
   table_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
-  // Spessore 0.10 m, faccia superiore a z=-0.001, 1 mm sotto il piano base
-  // del robot. Blocca il gomito che nelle pose laterali basse scende sotto
-  // z=0. The 1 mm gap matters: the UR base collision mesh goes down to
-  // z = -0.000002, and at exactly z = 0 move_group sometimes reports a
-  // base_link_inertia - table contact and refuses the start state.
+  // Top face 1 mm below the robot base: the UR base mesh goes slightly below
+  // z = 0, and a table at exactly z = 0 makes move_group refuse the start state.
   table_shape.dimensions = {1.5, 1.5, 0.10};
   Eigen::Vector3d table_pos(0.0, 0.0, -0.051);
   moveit_msgs::msg::CollisionObject table = make_obj(
       "table", table_shape, table_pos, identity_quat(), global_frame, stamp);
 
-  // ---------------- Muri della cella (opzionali) ----------------
-  // Pareti sottili alte 1.5 m: dietro il robot (y negativa) e ai lati (x).
-  // Nessun muro davanti: la piattaforma sta a y positiva. Attive solo se la
-  // coordinata nel YAML e' diversa da 0.
+  // Cell walls behind (-y) and beside the robot, never in front; 0 = no wall.
   const bool use_leftwall  = opt.wall_left_x  != 0.0;
   const bool use_rightwall = opt.wall_right_x != 0.0;
   const bool use_backwall  = opt.wall_back_y  != 0.0;
@@ -177,7 +154,6 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
       make_obj("backwall", backwall_shape, backwall_pos, identity_quat(),
                global_frame, stamp);
 
-  // Ceiling over the whole cell, from behind the robot to past the platform.
   const bool use_ceiling = opt.wall_top_z != 0.0;
   shape_msgs::msg::SolidPrimitive ceiling_shape;
   ceiling_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
@@ -187,15 +163,13 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
       make_obj("ceiling", ceiling_shape, ceiling_pos, identity_quat(),
                global_frame, stamp);
 
-  // ---------------- Parete di montaggio (base non in origine) ----------------
-  // Lastra 1.5 x 1.5 x 0.05 m perpendicolare all'asse Z della base, con la
-  // faccia superiore 5 mm sotto il piano della flangia cosi' la base non la
-  // tocca. Con la base in origine il ruolo lo fa gia' il tavolo.
+  // Mounting wall when the base is not at the origin: 5 mm below the base
+  // plane, so the base does not touch it (at the origin the table does this).
   const bool use_mountwall = !opt.base_xyz.isZero() || !opt.base_rpy.isZero();
   moveit_msgs::msg::CollisionObject mountwall;
   if (use_mountwall) {
     const double thickness = 0.05;
-    // rpy della URDF: rotazioni fisse roll (X), pitch (Y), yaw (Z)
+    // URDF rpy: fixed-axis roll (X), pitch (Y), yaw (Z)
     Eigen::Quaterniond base_q =
         Eigen::AngleAxisd(opt.base_rpy.z(), Eigen::Vector3d::UnitZ()) *
         Eigen::AngleAxisd(opt.base_rpy.y(), Eigen::Vector3d::UnitY()) *
@@ -215,7 +189,6 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     mountwall = make_obj("mountwall", mw_shape, mw_pos, mw_q, global_frame, stamp);
   }
 
-  // ---------------- Target sphere (internal marker) ----------------
   shape_msgs::msg::SolidPrimitive sphere_shape;
   sphere_shape.type = shape_msgs::msg::SolidPrimitive::SPHERE;
   sphere_shape.dimensions = {0.01};
@@ -223,25 +196,20 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
       make_obj("support_center", sphere_shape, center, identity_quat(),
                global_frame, stamp);
 
-  // Package share path usato sia per platform STL che per artefact OBJ
   std::string package_path =
       ament_index_cpp::get_package_share_directory("ur_automata_scene");
 
-  // ---------------- Platform (modalità SIM = disco + 3 gambe) -----------
-  // Variabili dichiarate qui per essere visibili nella sezione "Assemble".
+  // Platform: simulated disk + 3 legs, or the STL of the real one.
   moveit_msgs::msg::CollisionObject support, leg1, leg2, leg3;
-  // ---------------- Platform (modalità STL = mesh reale) ----------------
   moveit_msgs::msg::CollisionObject platform;
 
   if (platform_sim) {
-    // Disco di supporto al centro
     shape_msgs::msg::SolidPrimitive disk_shape;
     disk_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
     disk_shape.dimensions = {0.008, 0.15};
     support = make_obj("support", disk_shape, center, identity_quat(),
                        global_frame, stamp);
 
-    // Parametri delle 3 gambe
     const double leg_height = 0.36;
     const double leg1_height = 0.23;
     const double leg_radius = 0.02;
@@ -280,8 +248,6 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     leg3 = make_obj("leg3", leg3_shape, leg3_mid,
                     rotation_z_to(leg3_start, leg3_end), global_frame, stamp);
   } else {
-    // Mesh STL della piattaforma reale, posizionata in modo che la faccia
-    // superiore del disco coincida con `center` (vedi platform_pose sotto).
     std::string platform_mesh_path =
         "file://" + package_path + "/meshes/" + opt.platform_mesh;
 
@@ -290,19 +256,13 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     platform.id = "platform";
     platform.operation = moveit_msgs::msg::CollisionObject::ADD;
 
-    // STL esportato in mm → scale 0.001 per convertire in metri
+    // STL in mm
     shape_msgs::msg::Mesh platform_mesh =
         load_mesh_msg(platform_mesh_path, 0.001);
     platform.meshes.push_back(platform_mesh);
 
-    // Rotazione composta: +90° attorno X, poi -90° attorno Z (entrambi nel
-    // frame world). Con questa rotazione, e l'STL scalato in metri, il disco
-    // (Ø 300 mm, spessore 4 mm) risulta centrato in (x, y - 0.20) e con la
-    // faccia superiore a z + 0.445 rispetto all'origine della mesh (valore di
-    // platform02.stl: piedi 0.455 m sotto il disco, cioe' sul tavolo con
-    // center.z 0.455). La posa e' quindi ricavata da `center` cosi' che il
-    // piano di appoggio coincida con il centro di scansione: spostare la
-    // piattaforma = cambiare scan.center.
+    // Pose such that the top face of the disk is at `center` (measures of
+    // platform02.stl: disk 0.20 m from the mesh origin along y, 0.445 m up).
     geometry_msgs::msg::Pose platform_pose;
     platform_pose.position.x = center.x();
     platform_pose.position.y = center.y() + 0.20;
@@ -317,7 +277,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     platform.mesh_poses.push_back(platform_pose);
   }
 
-  // ---------------- Mesh Artefact (OBJ) ----------------------
+  // Object to scan, on the disk.
   std::string mesh_path =
       "file://" + package_path + "/meshes/ceramic_model.obj";
 
@@ -337,17 +297,13 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   mesh_pose.orientation = identity_quat();
   artefact.mesh_poses.push_back(mesh_pose);
 
-  // ---------------- Keep-out di margine (opzionali) ----------------
-  // Oggetti "gonfiati" attorno agli ostacoli: il check di collisione di
-  // MoveIt e' binario, quindi il margine si ottiene facendo collidere il
-  // robot con questi prima che tocchi l'ostacolo vero. Sono oggetti del
-  // mondo: non collidono fra loro ne' con la piattaforma, solo con il robot.
+  // Keep-out volumes: MoveIt collision checks are yes/no, so a safety margin
+  // is a larger object around the real obstacle.
   const bool use_table_margin = opt.table_margin > 0.0;
   moveit_msgs::msg::CollisionObject table_margin;
 
-  // Keep-out cylinders around the real platform (STL mode only). Positions
-  // from platform02.stl: the stem axis is 0.20 m behind `center` (+y) and the
-  // top of the base is 0.379 m below `center`.
+  // Around the real platform only. From platform02.stl: stem axis 0.20 m
+  // behind `center` (+y), top of the base 0.379 m below `center`.
   const bool use_stem_base = !platform_sim && opt.stem_base_enabled;
   const bool use_stem      = !platform_sim && opt.stem_enabled;
   const bool use_disk      = !platform_sim && opt.disk_enabled;
@@ -386,9 +342,8 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
                             global_frame, stamp);
   }
   if (use_support) {
-    // Block on top of the stem: 0.12 m along x, 0.18 m along y, from 0.054 m
-    // to 0.007 m below `center`. The box top is cut at the disk top face, so
-    // it never sticks out above the plane of the artefact.
+    // Block on top of the stem (0.12 x 0.18 m, 0.054..0.007 m below `center`),
+    // cut at the disk top face.
     const double m = opt.support_margin;
     const double bottom_z = center.z() - 0.054 - m;
     double top_z = center.z() - 0.007 + m;
@@ -404,9 +359,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   }
 
   if (use_table_margin) {
-    // Lastra alta table_margin sopra il tavolo, sotto la sfera di scansione.
-    // Parte da y = 0.12 per non toccare la colonna della base (raggio ~0.09
-    // attorno all'origine), che altrimenti sarebbe sempre in collisione.
+    // Starts at y = 0.12 so it does not touch the robot base (radius ~0.09).
     const double y_min = 0.12;
     const double y_max = center.y() + 0.50;
     shape_msgs::msg::SolidPrimitive tm_shape;
@@ -417,7 +370,6 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
                             identity_quat(), global_frame, stamp);
   }
 
-  // ---------------- Assemble the scene ----------------
   scene.world.collision_objects.push_back(table);
   scene.world.collision_objects.push_back(target);
   scene.world.collision_objects.push_back(artefact);
@@ -441,7 +393,6 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   if (use_ceiling)   scene.world.collision_objects.push_back(ceiling);
   if (use_mountwall) scene.world.collision_objects.push_back(mountwall);
 
-  // ---------------- Colors ----------------
   scene.object_colors.push_back(make_color("table", 1.0f, 1.0f, 1.0f));
   scene.object_colors.push_back(make_color("support_center", 1.0f, 0.0f, 0.0f));
   scene.object_colors.push_back(
@@ -454,16 +405,13 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   } else {
     scene.object_colors.push_back(make_color("platform", 0.8f, 0.8f, 0.85f));
   }
-  // Giallo semitrasparente: si legge come "margine", non come ostacolo.
   if (use_table_margin) {
     scene.object_colors.push_back(make_color("table_margin", 1.0f, 0.85f, 0.0f, 0.35f));
   }
-  // Light blue, very transparent: the platform stays visible inside.
   if (use_stem_base) scene.object_colors.push_back(make_color("keepout_stem_base", 0.4f, 0.7f, 1.0f, 0.2f));
   if (use_stem)      scene.object_colors.push_back(make_color("keepout_stem",      0.4f, 0.7f, 1.0f, 0.2f));
   if (use_disk)      scene.object_colors.push_back(make_color("keepout_disk",      0.4f, 0.7f, 1.0f, 0.2f));
   if (use_support)   scene.object_colors.push_back(make_color("keepout_support",   0.4f, 0.7f, 1.0f, 0.2f));
-  // Muri grigi quasi trasparenti, per non nascondere il robot in RViz.
   if (use_leftwall)  scene.object_colors.push_back(make_color("leftwall",  0.6f, 0.6f, 0.6f, 0.1f));
   if (use_rightwall) scene.object_colors.push_back(make_color("rightwall", 0.6f, 0.6f, 0.6f, 0.1f));
   if (use_backwall)  scene.object_colors.push_back(make_color("backwall",  0.6f, 0.6f, 0.6f, 0.1f));

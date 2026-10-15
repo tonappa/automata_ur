@@ -51,6 +51,8 @@ Notes:
   `ur_automata_moveit_config/config/ur_automata.srdf` (`home`, `up`,
   `lower_scan_ready`, `home_wall`). They are joint values, so they depend on the
   base pose: `home_wall` for a wall-mounted robot.
+- `home_wall` holds the arm up along the wall with the forearm over the
+  platform: with the base at the origin it would end up under the table.
 - A non-zero `base_xyz` / `base_rpy` also adds a mounting wall behind the base
   in the scene. Example of a wall mount: `base_xyz: [0.133, -0.25, 0.455]`,
   `base_rpy: [-1.5708, 0, 0]`.

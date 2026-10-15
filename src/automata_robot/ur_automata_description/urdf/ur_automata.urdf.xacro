@@ -44,9 +44,8 @@
   <xacro:arg name="initial_positions_file" default="$(find ur_automata_moveit_config)/config/initial_positions.yaml"/>
   <xacro:property name="initial_positions_file_prop" value="$(arg initial_positions_file)"/>
 
-  <!-- Posa della base nel mondo, letta da automata_config.yaml (robot.base_xyz /
-       base_rpy): driver e MoveIt generano la stessa URDF senza argomenti extra ai
-       launch. Chiavi assenti = base in origine. -->
+  <!-- Base pose read from automata_config.yaml (robot.base_xyz / base_rpy), so
+       driver and MoveIt build the same URDF. Missing keys = base at the origin. -->
   <xacro:property name="automata_config_file" value="$(find ur_automata_bringup)/config/automata_config.yaml"/>
   <xacro:property name="automata_config" value="${xacro.load_yaml(automata_config_file)}"/>
   <xacro:property name="base_xyz" value="${automata_config['robot'].get('base_xyz', [0, 0, 0])}"/>
@@ -123,9 +122,7 @@
     </collision>
   </link>
 
-  <!-- Camera optical center on ee_automata_V2.stl: lens rings centered at
-       x 0, z 174.5 mm (lens barrel axis parallel to Y, the viewing direction),
-       front face at y 52 mm. V1 had the lens at z 153. -->
+  <!-- Camera TCP = lens center of ee_automata_V2.stl; it looks along Y. -->
   <joint name="ee_automata_fixed_joint" type="fixed">
     <origin xyz="0 0.052 0.1745" rpy="0 0 0"/>
     <parent link="tool0"/>
@@ -133,10 +130,8 @@
   </joint>
   <link name="ee_automata_tcp"/>
 
-  <!-- Hyperspectral sensor (HSI) on the same end effector: 83.5 mm closer to
-       the flange than the camera (z 174.5 - 83.5 = 91 mm) and 20 mm further
-       forward, toward the object (y 52 + 20 = 72 mm). It looks along Y, like
-       the camera. Used by ur_automata_hsi. -->
+  <!-- Hyperspectral sensor: 83.5 mm closer to the flange than the camera and
+       20 mm further forward; it looks along Y too. -->
   <joint name="ee_automata_hsi_fixed_joint" type="fixed">
     <origin xyz="0 0.072 0.091" rpy="0 0 0"/>
     <parent link="tool0"/>

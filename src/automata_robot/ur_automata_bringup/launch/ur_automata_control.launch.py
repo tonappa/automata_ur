@@ -1,3 +1,4 @@
+# Robot only: UR driver, controllers and digital I/O, settings from automata_config.yaml.
 import os
 import yaml
 
@@ -11,11 +12,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _load_config():
-    """Legge automata_config.yaml dal share installato di ur_automata_bringup.
-
-    Nota: dopo aver modificato il YAML in src/, ricordarsi di ribuildare
-    ur_automata_bringup (i launch file leggono dal package share, non da src).
-    """
+    """Installed automata_config.yaml: rebuild ur_automata_bringup after editing it."""
     cfg_path = os.path.join(
         get_package_share_directory("ur_automata_bringup"),
         "config",

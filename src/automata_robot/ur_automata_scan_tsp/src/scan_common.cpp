@@ -30,12 +30,9 @@ std::vector<double> build_pitch_offsets_rad(double range_deg, double step_deg)
   return offsets;
 }
 
-// ---------------------------------------------------------------------------
-// Line of sight camera -> center against the scene objects. If the segment
-// crosses an object the photo shows the obstacle (e.g. the platform stem): the
-// waypoint is dropped before any IK. Ignored: the center marker, the scanned
-// object, the keep-out margins and cylinders and hits within 3 cm of the center.
-// ---------------------------------------------------------------------------
+// Line of sight camera -> center against the scene objects: a blocked waypoint
+// is dropped before any IK. Ignored: the scanned object, the keep-outs and hits
+// within 3 cm of the center.
 
 // Moller-Trumbore ray / triangle intersection.
 static bool ray_hits_triangle(
@@ -124,11 +121,8 @@ static bool is_scene_occluding(
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// Platform visibility: sight lines from the camera to the disk center and 24
-// rim points, as thin cylinders in a separate collision world, checked against
-// the real arm collision meshes (end-effector links ignored).
-// ---------------------------------------------------------------------------
+// Platform visibility: sight lines camera -> disk center and 24 rim points, as
+// thin cylinders checked against the arm collision meshes (end effector ignored).
 static planning_scene::PlanningScenePtr make_sight_scene(const moveit::core::RobotModelConstPtr & model)
 {
   auto sight_scene = std::make_shared<planning_scene::PlanningScene>(model);
@@ -202,9 +196,6 @@ geometry_msgs::msg::Pose make_lookat(const Eigen::Vector3d & pos, const Eigen::V
   return pose;
 }
 
-// ---------------------------------------------------------------------------
-// IK branch seeds
-// ---------------------------------------------------------------------------
 static bool is_duplicate(const std::vector<double> & joints, const std::vector<Candidate> & list)
 {
   for (const auto & c : list) {
@@ -243,9 +234,8 @@ static double wrap_pi(double a)
   return a;
 }
 
-// Eight TRAC-IK seeds from one configuration: wrist flipped / not, elbow up /
-// down, shoulder left / right. Only starting points: TRAC-IK converges on the
-// exact solution of the branch.
+// Eight TRAC-IK seeds, one per IK branch (wrist / elbow / shoulder flipped);
+// only starting points, TRAC-IK converges on the exact solution.
 static std::vector<std::vector<double>> make_branch_seeds(
   const std::vector<double> & base, const UrJointIndex & j)
 {
@@ -282,9 +272,6 @@ static std::vector<std::vector<double>> make_branch_seeds(
   return seeds;
 }
 
-// ---------------------------------------------------------------------------
-// Candidate enumeration (FASE 1 of scan_sequence_node)
-// ---------------------------------------------------------------------------
 EnumResult enumerate_candidates(const EnumSettings & s,
                                 const std::vector<geometry_msgs::msg::Pose> & waypoints,
                                 const moveit::core::RobotState & start_state,
@@ -386,8 +373,7 @@ EnumResult enumerate_candidates(const EnumSettings & s,
     std::vector<Candidate> & layer = result.layers[i];
     enumerate_pose(waypoints[i], false, seeds, s.pitch_offsets, layer, s.ik_timeout);
 
-    // Near the reach limit the solver may miss existing solutions in 3 ms:
-    // retry with a 20x timeout, also from the 8 branches of the start pose.
+    // Near the reach limit 3 ms can miss solutions: retry with a 20x timeout.
     const double slow_ik_timeout = s.ik_timeout * 20.0;
     std::vector<std::vector<double>> retry_seeds = seeds;
     if (!prev_seeds.empty()) retry_seeds.insert(retry_seeds.end(), home_seeds.begin(), home_seeds.end());
@@ -453,9 +439,6 @@ bool segment_is_free(const planning_scene::PlanningScenePtr & scene,
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Planner chain
-// ---------------------------------------------------------------------------
 bool resolve_planner(const std::string & name, const std::string & ompl_algorithm, PlannerChoice & out)
 {
   if (name == "ompl") {
@@ -474,8 +457,8 @@ bool resolve_planner(const std::string & name, const std::string & ompl_algorith
   return true;
 }
 
-// Pilz CIRC reads only the position of the "center" constraint; the region is
-// left without primitives on purpose, so ValidateSolution ignores it.
+// Pilz CIRC reads only the position of the "center" constraint; no primitives
+// on purpose, so ValidateSolution ignores it.
 moveit_msgs::msg::Constraints make_circ_center_constraint(
   const std::string & frame, const std::string & link, const Eigen::Vector3d & center)
 {

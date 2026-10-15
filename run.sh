@@ -4,9 +4,7 @@
 # Istituto Italiano di Tecnologia (IIT)
 # Email: do.park@iit.it
 
-# =================================================================== #
-#          workspace config and build, run and stop docker            #
-# =================================================================== #
+# Build, run and stop the Docker container of the workspace.
 
 # XAUTH setup for GUI forwarding
 export XAUTH=/tmp/.docker.xauth
@@ -30,7 +28,6 @@ export WORKSPACE_NAME=$(basename "$PWD")
 IMAGE_NAME="${WORKSPACE_NAME}_ws"
 CONTAINER_NAME="${WORKSPACE_NAME}_container"
 
-# =================================================================== #
 
 # ensure required directories exist
 mkdir -p ./docker

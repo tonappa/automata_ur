@@ -4,7 +4,6 @@ set -e
 # source base ROS environment
 source /opt/ros/${ROS_DISTRO}/setup.bash
 
-# dynamic workspace path (set from WORKSPACE_NAME env var passed by docker-compose)
 WORKSPACE_PATH="/home/ros/${WORKSPACE_NAME}"
 
 # source workspace if already compiled
@@ -18,5 +17,4 @@ else
     echo "Workspace not built yet. Run: colcon build --cmake-args -DCMAKE_CXX_FLAGS=\"-w\" -DBUILD_TESTING=OFF --executor sequential"
 fi
 
-# execute the user command (e.g., bash)
 exec "$@"

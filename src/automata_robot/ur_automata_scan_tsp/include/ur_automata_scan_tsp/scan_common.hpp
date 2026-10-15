@@ -1,10 +1,7 @@
 #pragma once
 
-// Pieces of ur_automata_scan/src/scan_sequence_node.cpp that scan_tsp_node
-// needs. They are static functions inside that node, so they cannot be linked:
-// they are copied here with the same logic (comments translated, the planner
-// statistics and the table output removed). Keep them in sync by hand if the
-// candidate filters or the planner chain of scan_sequence_node change.
+// Copied from scan_sequence_node.cpp (static functions there, so they cannot
+// be linked). Keep in sync by hand if its candidate filters or planner chain change.
 
 #include <string>
 #include <vector>
@@ -19,10 +16,6 @@
 #include <moveit_msgs/msg/constraints.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-// ---------------------------------------------------------------------------
-// IK candidates
-// ---------------------------------------------------------------------------
-
 // A valid configuration that reaches a waypoint (or its fallback point).
 struct Candidate {
   std::vector<double> joints;          // group joints, JointModelGroup order
@@ -31,13 +24,13 @@ struct Candidate {
   bool is_fallback = false;            // true if the pose is a nearby point, not the waypoint
 };
 
-// Alternating pitch offsets in radians: [0, +step, -step, +2 step, -2 step, ...] up to +-range.
+// [0, +step, -step, +2 step, -2 step, ...] up to +-range, in radians.
 std::vector<double> build_pitch_offsets_rad(double range_deg, double step_deg);
 
 // Look-at pose: position `pos`, Y axis toward `center`.
 geometry_msgs::msg::Pose make_lookat(const Eigen::Vector3d & pos, const Eigen::Vector3d & center);
 
-// Settings of the candidate enumeration (same meaning as the scan_* parameters).
+// Same meaning as the scan_* parameters.
 struct EnumSettings {
   std::string group;
   std::string ee_link;
@@ -61,26 +54,20 @@ struct EnumResult {
   double seconds = 0.0;
 };
 
-// FASE 1 of scan_sequence_node: every valid IK configuration of every waypoint
-// (pitch x IK branches, seeded from the previous waypoint in list order), with
-// the scene collision, platform visibility and line-of-sight filters, the slow
-// IK retry and the nearby fallback points.
+// Every valid IK configuration of every waypoint, with the collision,
+// platform visibility and line-of-sight filters and the fallback points.
 EnumResult enumerate_candidates(const EnumSettings & s,
                                 const std::vector<geometry_msgs::msg::Pose> & waypoints,
                                 const moveit::core::RobotState & start_state,
                                 const planning_scene::PlanningScenePtr & scene);
 
-// True if the straight joint-space line from a to b collides with nothing
-// (one sample every ~3 degrees on the joint that moves the most), i.e. the
-// path Pilz PTP would follow. Always true without a scene.
+// True if the straight joint-space line a -> b (the Pilz PTP path) is
+// collision-free, sampled every ~3 degrees. Always true without a scene.
 bool segment_is_free(const planning_scene::PlanningScenePtr & scene,
                      const moveit::core::RobotState & reference,
                      const moveit::core::JointModelGroup * jmg,
                      const std::vector<double> & a, const std::vector<double> & b);
 
-// ---------------------------------------------------------------------------
-// Planner chain
-// ---------------------------------------------------------------------------
 struct PlannerChoice {
   std::string pipeline;   // e.g. "pilz_industrial_motion_planner" or "ompl"
   std::string planner;    // e.g. "PTP" or "RRTConnectkConfigDefault"
@@ -93,16 +80,15 @@ struct PlannerSetup {
   moveit_msgs::msg::Constraints circ_center;  // path constraint required by CIRC
 };
 
-// YAML name ("ompl", "pilz_ptp", "pilz_lin", "pilz_circ", "stomp") -> planner.
+// Config name ("ompl", "pilz_ptp", "pilz_lin", "pilz_circ", "stomp") -> planner.
 bool resolve_planner(const std::string & name, const std::string & ompl_algorithm, PlannerChoice & out);
 
 // Path constraint that Pilz CIRC reads as the arc center.
 moveit_msgs::msg::Constraints make_circ_center_constraint(
   const std::string & frame, const std::string & link, const Eigen::Vector3d & center);
 
-// plan() along the planner chain; the target (and the start state) must be set
-// by the caller. allow_circ = false skips CIRC (start not on the scan sphere).
-// used_label (optional) receives the planner that succeeded.
+// plan() along the chain; the caller sets target and start state.
+// allow_circ = false skips CIRC (start not on the scan sphere).
 bool plan_with_fallback(moveit::planning_interface::MoveGroupInterface & move_group,
                         moveit::planning_interface::MoveGroupInterface::Plan & plan,
                         const PlannerSetup & planners, bool allow_circ,

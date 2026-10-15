@@ -1,6 +1,6 @@
 #!/bin/bash
-# URSim e-series (ur5e) con seccomp=unconfined + URCap External Control + persistenza.
-# Workaround per kernel >= 6.15 (URControl ENOSYS su socket()).
+# URSim e-series with the External Control URCap and persistent programs.
+# seccomp=unconfined: on kernels >= 6.15 URControl otherwise fails (ENOSYS on socket()).
 
 set -e
 
@@ -15,7 +15,7 @@ URCAP_URL="https://github.com/UniversalRobots/Universal_Robots_ExternalControl_U
 
 mkdir -p "$URCAP_STORAGE" "$PROGRAM_STORAGE" "$POLYSCOPE_STORAGE"
 
-# Rimuovi vecchio .urcap (formato legacy non riconosciuto da PolyScope 5.25)
+# Old .urcap format, not recognized by PolyScope 5.25
 rm -f "$URCAP_STORAGE"/externalcontrol-*.urcap
 
 if [ ! -f "$URCAP_FILE" ]; then

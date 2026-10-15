@@ -1,275 +1,115 @@
+# Cell configuration, read by every launch file. Explained in docs/configuration.md
+# and docs/scan.md. After a change: colcon build --packages-select ur_automata_bringup.
+
 robot:
   ip: 192.168.1.97         # real robot 192.168.1.97, URSim 192.168.56.101
   type: ur5                 # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
-  # Kinematic calibration of this robot: YAML written by ur_calibration, in
-  # ur_automata_bringup/config. Driver and MoveIt both read it, so planning,
-  # checks and the real robot use the same model. "" = nominal kinematics of
-  # ur_description (URSim). After a change: rebuild ur_automata_bringup,
-  # restart driver and MoveIt, plan the scans again.
+  # YAML from ur_calibration in this folder, read by driver and MoveIt; "" = nominal (URSim).
+  # After a change, plan the scans again.
   calibration_file: ur5_calibration.yaml
-  # Posa della base nel frame `world` (giunto fisso world -> base_link della URDF).
-  # La legge direttamente lo xacro, quindi driver e MoveIt generano la stessa
-  # URDF. Dopo una modifica: rebuild di ur_automata_bringup + riavvio bringup.
-  # Se diversa da zero la scena aggiunge una parete di montaggio dietro la base.
-  # Esempio robot a muro, asse pan (Z base) rivolto verso la piattaforma, X invariato:
-  #   base_xyz: [0.133, -0.25, 0.455]     base_rpy: [-1.5708, 0.0, 0.0]
-  #   e planning.home_pose_name / lower_home_pose_name: home_wall
-  base_xyz: [0.0, 0.0, 0.0]         # metri
-  base_rpy: [0.0, 0.0, 0.0]         # radianti: roll (X), pitch (Y), yaw (Z)
+  # Base pose in `world` (m, rad: roll, pitch, yaw). Non-zero adds a mounting wall
+  # to the scene; a wall mount also needs the home_wall poses below.
+  base_xyz: [0.0, 0.0, 0.0]
+  base_rpy: [0.0, 0.0, 0.0]
 
 planning:
   group: ur_manipulator
-  global_frame: world                  # frame in cui sono espressi gli ostacoli e il centro dello scan
-  end_effector_link: ee_automata_tcp   # tip_link del kinematic chain (deve coincidere col SRDF)
-  trajectory_scaling_factor: 0.4       # speed of the calibration run; the replay keeps it (start low on the real robot)
-  # group_state SRDF (ur_automata_moveit_config/config/ur_automata.srdf): pose iniziale,
-  # recovery dell'emisfero superiore (home_pose_name) e di quello inferiore
-  # (lower_home_pose_name). Sono in giunti, quindi dipendono da robot.base_rpy:
-  #   base in origine -> home / lower_scan_ready
-  #   base a muro     -> home_wall / home_wall (le altre finiscono nella piattaforma)
+  global_frame: world                  # frame of the obstacles and of the scan center
+  end_effector_link: ee_automata_tcp   # camera lens center, tip of the SRDF chain
+  trajectory_scaling_factor: 0.4       # speed used when planning; the `speed` argument scales it
+  # SRDF group_states: start / recovery pose of the upper and lower hemisphere
+  # (joint values: home_wall / home_wall for a wall-mounted base).
   home_pose_name: home
   lower_home_pose_name: lower_scan_ready
   use_moveit: true
-  use_scene: true                      # spawn scene with MoveIt, scene defined in ur_automata_scene pkg
-  use_rviz: true                       # launch RViz alongside MoveIt
+  use_scene: true
+  use_rviz: true
 
 scan:
-  # Storia della posizione (URSim, r 0.30, full 4x15):
-  #   [0.133, 0.40, 0.504]  punto estremo a 0.955 m, fuori portata
-  #   [0.133, 0.35, 0.504]  0.927 m, fuori di 9 mm
-  #   [0.133, 0.35, 0.470]  82/82, 140 s, 2290 candidati (anello basso lato base 124)
-  #   [0.0,   0.374, 0.470] centrato sull'asse: 82/82 ma 181 s, il pan gira il doppio
-  #   [0.133, 0.365, 0.470] 82/82, 132 s, 1977 candidati: l'anello basso guadagna, gli altri perdono
-  #   [0.133, 0.375, 0.455] 82/82, 139 s, 2457 candidati (anello basso 202): stessa distanza dalla
-  #                         base ma sfera piu' orizzontale e bassa -> scelta. wp 46/47 restano a 1-2
-  #                         candidati per autocollisione EE<->avambraccio, nessuna posizione li sposta.
-  #                         Rerun 2026-09-08 dopo il muro: 82/82, 124 s, PTP 81 / OMPL 2, 2274 candidati.
-  #                         platform01.stl (2026-09-08): 79/82, 159 s, PTP 72 / OMPL 8; wp 38/54/60
-  #                         (1-based) lost, every IK collides with the platform; wp 79 reached behind the stem.
-  #                         + line-of-sight check (2026-09-08): 78/82, 171 s, PTP 72 / OMPL 8; wp 38/54 IK,
-  #                         wp 60/79 view blocked by the platform.
-  #                         Rerun 2026-09-29 (ur_client_library 2.15): 78/82, 163 s, PTP 72 / OMPL 7,
-  #                         same waypoints lost, 1945 candidates.
-  # Robot a muro (robot.base_xyz/base_rpy sopra, home_wall):
-  #   [0.133, 0.375, 0.455] base z 0.455, centro a 0.625 m dalla flangia: 63/82, 276 s, 19 persi
-  #                         tutti nell'inferiore (braccio attraverso il disco), scena senza parete
-  #   [0.133, 0.40, 0.50]   base z 0.50, centro a 0.65 m dalla flangia, parete nella scena: enumerazione
-  #                         82/82 (2471 candidati, 80% tratti bloccati), scan non eseguito -> tornati al tavolo
-  center: [0.133, 0.375, 0.455]  # centro del supporto (faccia superiore del disco), in metri, nel
-                                 # frame `planning.global_frame`. Il punto piu' lontano della sfera
-                                 # dista |center| + radius dalla base: tenerlo sotto ~0.91 m.
-                                 # La mesh della piattaforma nella scena segue questo valore.
-  platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL `platform_mesh`
-  # File STL in ur_automata_scene/meshes (mm, stesso riferimento di disk.stl), usato con platform_sim false:
-  #   disk.stl        solo il disco Ø300x4 vicino al robot (stesso riferimento di platform01:
-  #                   con la posa di platform02 finirebbe 5.9 cm sopra center)
-  #   platform01.stl  piattaforma completa: due dischi a ±0.20 m dall'asse, mozzo, stelo, basamento
-  #                   con motore dalla parte opposta al robot; 28k triangoli. Alta 0.514 m: con la
-  #                   posa di platform02 il disco finirebbe 5.9 cm sopra center -> non usarla.
-  #   platform02.stl  (2026-10-09) come platform01 con lo stelo accorciato di 59 mm: piedi 0.455 m
-  #                   sotto il disco, quindi appoggiata sul tavolo con center.z 0.455. The scene
-  #                   (mesh pose and keepouts) uses the measures of this file.
-  platform_mesh: platform02.stl
-  # Keep-out di margine (metri, 0 = disattivo), giallo in RViz:
-  #   table_margin    -> lastra alta m sul tavolo sotto la sfera (da y 0.12, fuori dalla base)
-  # dp8: con 0.02 su entrambi si perde il wp 46 (sotto il disco, lato base) -> tavolo a 0.
-  table_margin: 0.0
-  # Keep-out cylinders around the real platform (only with platform_sim: false),
-  # light blue in RViz. The robot plans around them, they do not hide the view
-  # (line-of-sight check). Meters. After a change: rebuild ur_automata_bringup,
-  # restart the bring-up and plan the TSP scan again (the scene is part of the plan).
-  #   stem_base -> lower part of the stem (hub and collars), standing on the top of the base
-  #   stem      -> stem, standing on top of stem_base (on the stem axis, 0.20 m behind center)
-  #   disk      -> disk of the artefact, top face at scan.center, going down by `height`
-  #   support   -> box around the block on top of the stem (180 x 120 x 47 mm), `margin`
-  #                larger on every side; the top is cut at the disk top face
+  center: [0.133, 0.375, 0.455]  # m, top face of the platform disk; keep |center| + radius below ~0.91 m
+  platform_sim: false   # true: simulated disk on 3 legs | false: the STL `platform_mesh`
+  platform_mesh: platform02.stl  # in ur_automata_scene/meshes; platform01.stl and disk.stl sit 5.9 cm too high
+  table_margin: 0.0     # m, keep-out slab on the table (0.02 already loses the waypoints under the disk)
+  # Keep-out volumes around the real platform (m, platform_sim false only).
   keepouts:
     stem_base: {enabled: true, diameter: 0.14, height: 0.10}
     stem:      {enabled: true, diameter: 0.08, height: 0.23}
     disk:      {enabled: true, diameter: 0.34, height: 0.005}
     support:   {enabled: true, margin: 0.01}
 
-  # Muri della cella (metri nel frame globale, 0 = nessun muro). Dietro e ai
-  # lati, niente davanti: la piattaforma sta a y positiva. Limiti fisici:
-  #   back_y  non oltre -0.42 (a `home` il gomito arriva a y -0.37)
-  #   right_x non sotto  0.75 (a `lower_scan_ready` l'EE arriva a x 0.71)
-  # First set (2026-09-29): arm envelope printed by the dry run (sectors 4,
-  # offset 45) + 0.10 m; right_x raised to 0.76 because the end-effector mesh
-  # reaches x 0.71 at lower_scan_ready (link origins stop at 0.63).
+  # Cell walls in the global frame (m, 0 = none), never in front.
+  # Limits: back_y >= -0.42 (elbow at home), right_x >= 0.75 (end effector at lower_scan_ready).
   walls:
     back_y: -0.47
     left_x: -0.52
     right_x: 0.76
-    top_z: 0.97     # ceiling height; must stay above the highest waypoint (center.z + radius) plus the end effector
-  radius: 0.25               # raggio della sfera di waypoint, in metri
-  hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
-  direction: latitudinal   # latitudinal | longitudinal
+    top_z: 0.97     # ceiling: above the highest waypoint plus the end effector
+  radius: 0.25              # m
+  hemisphere: full          # upper | lower | full (upper first)
+  direction: latitudinal    # latitudinal | longitudinal
 
-  # Banda equatoriale "vietata": il robot non può puntare in linea col supporto.
-  # L'ultimo anello/punto si ferma a (90° - exclusion) dal polo.
-  # I due emisferi possono avere valori diversi: l'inferiore spesso ha più spazio.
+  # No waypoints within this angle of the equator (deg).
   equator_exclusion_upper_deg: 15.0
   equator_exclusion_lower_deg: 20.0
 
-  # --- parametri LATITUDINAL (ring-by-ring) ---
-  # numero di anelli tra polo ed equatore (escluso polo)
-  num_rings: 4
-  # punti per ogni anello
+  num_rings: 4              # latitudinal: rings between pole and equator
   points_per_ring: 15
-
-  # --- parametri LONGITUDINAL (meridian-by-meridian) ---
-  # numero di meridiani
-  num_arc: 5
-  # punti per ogni meridiano (escluso polo)
+  num_arc: 5                # longitudinal: meridians
   points_per_arc: 4
 
-  # true:  pitch del TCP bloccato (X del TCP orizzontale, nessuna rotazione attorno a Y)
-  # false: pitch libero — Y_TCP continua a puntare al centro, ma la rotazione attorno
-  #        a Y è scelta cercando un IK valido (priorità a pitch=0, poi ±step).
-  lock_pitch: false
-  stagger_rings: true    # se true, gli anelli pari sono sfasati di mezzo passo → copertura più uniforme
-  adaptive_rings: true   # se true, points_per_ring scala con sin(theta) → meno punti al polo, più all'equatore
-  # occlusion_check (scan_sequence_node): discard the IK solutions where an arm
-  # link hides part of the platform disk from the camera. Sight lines from the
-  # camera to the disk center and to 24 points on its rim (QR codes all around,
-  # on top and below), checked against the real arm collision meshes, in both
-  # hemispheres. occlusion_margin = how close (m) a link may come to a line of sight.
-  occlusion_check: true
-  occlusion_disk_radius: 0.15   # platform disk radius (m), Ø300 mm
-  occlusion_margin: 0.01
-  fallback_search: true  # se true, cerca un punto alternativo vicino ai FAIL (entrambi gli emisferi)
-  fallback_radius_mm: 20.0  # raggio di ricerca sulla sfera in mm (es. 10-30)
+  lock_pitch: false      # true: camera X axis horizontal; false: rotation about the optical axis searched
+  stagger_rings: true    # even rings shifted by half a step
+  adaptive_rings: true   # points per ring scale with sin(theta)
+  occlusion_check: true  # drop IK solutions where the arm hides the platform disk
+  occlusion_disk_radius: 0.15   # m
+  occlusion_margin: 0.01        # m, closest a link may come to a line of sight
+  fallback_search: true  # look for a nearby point when a waypoint has no IK
+  fallback_radius_mm: 20.0
 
-  # When lock_pitch=false: rotation of the camera around its optical axis (Y_TCP).
-  # Every offset in [-range, +range] with this step is tried for every waypoint,
-  # and every one with a valid IK becomes a candidate of the DP.
-  # xparallel_bias: extra DP cost per radian of offset. 0.0 = any rotation is
-  #                 fine; 0.05 = mild preference for X horizontal (offset 0);
-  #                 > 0.3 = X horizontal almost always.
+  # lock_pitch false: offsets tried about the optical axis; bias = DP cost per rad of offset.
   pitch_search_range_deg: 180.0
   pitch_search_step_deg:  15.0
   pitch_xparallel_bias:   0.05
 
-  # Timeout (secondi) di ogni chiamata IK nella fase di enumerazione di
-  # scan_sequence_node (TRAC-IK in modalita' Speed). Le pose raggiungibili
-  # tornano in <1 ms; quelle irraggiungibili consumano tutto il timeout.
-  # Costo massimo della fase: waypoint x pitch x seed x enum_ik_timeout.
-  enum_ik_timeout: 0.003
+  enum_ik_timeout: 0.003    # s per IK call of the candidate enumeration
 
-  # Catena di planner di scan_sequence_node: ogni tratto prova i planner in
-  # questo ordine e si ferma al primo che riesce.
-  #   pilz_circ → arco sulla sfera con centro `scan.center`: il TCP resta sulla
-  #               sfera e la camera inquadra l'oggetto per tutto il tratto.
-  #               Serve partire da un punto della sfera, quindi da `home` e
-  #               dalle pose di recovery viene saltato (raggi diversi).
-  #   pilz_ptp  → retta in joint space, deterministica, ~10 ms.
-  #   ompl      → OMPL with `ompl_algorithm`, last resort.
-  # Il centro dell'arco e' letto in `planning.global_frame`, che deve coincidere
-  # con il frame radice del modello (qui `world`).
-  # dp10 con [pilz_circ, pilz_ptp, stomp, ompl]: 262 s contro 143 s di dp7 e
-  # OMPL usato 5 volte invece di 6 -> archi piu' lenti delle rette, 25 CIRC
-  # falliti (polso oltre i limiti di accelerazione) e 5 STOMP in timeout.
-  # Si resta su retta + OMPL. STOMP e' stato tolto (2026-10-15): per riprovarlo
-  # serve di nuovo stomp_planning.yaml in ur_automata_moveit_config/config.
+  # Planner chain per segment, first success wins: pilz_circ | pilz_ptp | ompl.
   planners: [pilz_ptp, ompl]
-
-  # Algoritmo OMPL, usato quando si pianifica con OMPL (voce `ompl` in
-  # `planners`). Ignorato dagli altri planner.
-  # Opzioni tipiche dell'ompl_planning.yaml upstream UR:
-  #   RRTConnect (default, bidirezionale, veloce, non ottimo)
-  #   RRT, RRTstar (asintoticamente ottimo), TRRT, BiTRRT, LBTRRT
-  #   PRM, PRMstar, LazyPRM, LazyPRMstar
-  #   KPIECE, BKPIECE, LBKPIECE
-  #   EST, BiEST, ProjEST, SBL, FMT, BFMT, PDST, STRIDE
-  # 2026-09-29: RRTstar instead of RRTConnect. OMPL only runs on the segments
-  # whose straight line collides (and on recoveries); RRTConnect returned the
-  # first random path (up to 2.7 m of elbow travel inside the walls), RRTstar
-  # spends the whole planning_time shortening it.
   ompl_algorithm: RRTstar
+  planning_time: 15.0                 # s per OMPL request
+  retry_planning_times: [30.0, 60.0]  # s, retries before the recovery pose ([] = none)
+  retry_ompl_algorithm: RRTConnect    # gets through narrow passages where RRTstar does not
+  planning_attempts: 3                # parallel OMPL attempts, the best path is kept
 
-  # Time (s) of one OMPL planning request. With RRTstar every OMPL segment uses
-  # the whole time (it keeps shortening the path); planning time is only paid in
-  # the calibration run, the replay does not plan.
-  planning_time: 15.0
-  # When nothing is found in planning_time, try again with these times before
-  # going to the recovery pose (home / lower_scan_ready). [] = recovery at once.
-  retry_planning_times: [30.0, 60.0]
-  # OMPL algorithm of those retries. RRTstar (one tree from the start) found no
-  # path to wp 13 in 15 + 30 + 60 s; RRTConnect (trees from both ends, stops at
-  # the first solution) gets through narrow passages like that one.
-  retry_ompl_algorithm: RRTConnect
-
-  # Independent OMPL attempts per request, run in parallel with different random
-  # seeds; MoveIt keeps the best path. Default MoveIt: 1.
-  planning_attempts: 3
-
-  # --- Sectors and arm swings (scan_sequence_node) ---
-  # sectors: azimuth slices per hemisphere (0 = classic ring-by-ring order).
-  #   With 4: front (robot side), side, back, other side, for the upper and then
-  #   the lower hemisphere; rings in serpentine order inside each slice.
-  #   Dry runs 2026-09-29 (Cartesian cost): 4 segments to OMPL instead of 9 with
-  #   the classic order. A home per sector was tried and dropped: the DP never
-  #   picked it (a detour always makes the arm travel more).
-  sectors: 4
-  # Rotation of the slices (deg, counterclockwise seen from above): 0 = sector 0
-  # centered on the robot side (front / right / back / left), 45 = boundaries on
-  # the robot -> center axis (front-right / back-right / back-left / front-left).
+  # Visit order (docs/scan.md, "Sectors and arm swings").
+  sectors: 4                # azimuth slices per hemisphere, 0 = ring by ring
   sector_offset_deg: 45.0
-  # DP segment cost = elbow path + TCP path (m) along the straight joint-space
-  # line + joint_cost_weight x joint distance (rad). The joint term keeps big
-  # wrist spins from being free: they do not move the elbow but take time.
-  # (Tried on 2026-09-29: per-joint weights + IK branch penalty instead of the
-  # Cartesian paths -> worse, 20 forecast swings vs 13 of the plain joint distance.)
-  joint_cost_weight: 0.1
-  # A motion is reported as an arm swing when the elbow travels more than this (m).
-  swing_threshold_m: 0.25
+  joint_cost_weight: 0.1    # DP cost = elbow path + TCP path (m) + this x joint distance (rad)
+  swing_threshold_m: 0.25   # elbow travel counted as an arm swing
 
-  # Recorded scan (path inside the container). Calibration run:
-  #   ros2 launch ur_automata_scan scan_sequence.launch.py record:=true
-  # saves every executed motion here at the end of a complete scan; work sessions:
-  #   ros2 launch ur_automata_scan scan_replay.launch.py
-  # play it back without planning. Record again after changing anything in the
-  # cell (center, radius, walls, platform, end effector, TCP, base pose).
+  # Recording of scan_sequence_node (record:=true), played by scan_replay_node.
   recording_file: /home/ros/ur/recordings/scan_sequence.yaml
 
-# Photo handshake of scan_tsp_node mode:=execute (std_msgs/String topics).
-# acquire and status go to/from the VimbaX camera app over MQTT through the
-# mqtt_client bridge (config/mqtt_bridge.yaml); start and done are for the
-# orchestrator, also over MQTT (automata/scan3d/start, automata/scan3d/done).
-# If you change a topic name here, change it in mqtt_bridge.yaml too. Waypoints are
-# numbered 1..N from the north pole to the south pole, ring by ring
-# (counterclockwise from +X of global_frame), counting only the waypoints of
-# the plan. Camera pose = end_effector_link in global_frame, meters.
+# 3D scan topics (scan_tsp_node, std_msgs/String). MQTT names in mqtt_bridge.yaml:
+# change both together. Messages in docs/mqtt.md.
 scan3d:
-  start_topic:    /scan3d/start      # in:  object name "object_3" -> starts a scan
-  capture_topic:  /scan3d/acquire    # out: "acquire: object_3; camera pose: [x, y, z, qx, qy, qz, qw]; waypoint_5"
-  status_topic:   /scan3d/status     # in:  camera state, JSON {"state", "object", "waypoint", "timestamp"};
-                                     #      "measure_complete" with this object and waypoint -> next waypoint
-  done_topic:     /scan3d/done       # out: "scan3D object_3" (or "scan3D object_3 ERROR") at the end of the scan
-  wait_for_next:  true               # false: do not wait for the camera (tests without the camera)
-  light_topic:    /scan3d/light      # out: std_msgs/Bool, true from the start message until the return home
-                                     #      (then done); "" = no lights. Robot digital output DO0 through
-                                     #      ur_io_ros2_manager: the same name must be in its config.yaml
+  start_topic:    /scan3d/start      # in:  object name
+  capture_topic:  /scan3d/acquire    # out: photo request with the camera pose
+  status_topic:   /scan3d/status     # in:  camera state (JSON)
+  done_topic:     /scan3d/done       # out: "scan3D <object>" (+ " ERROR")
+  wait_for_next:  true               # false: do not wait for the camera
+  light_topic:    /scan3d/light      # out: std_msgs/Bool, lights on DO0 during the scan; "" = none.
+                                     #      Same name as in ur_io_ros2_manager/config/config.yaml
 
-# Hyperspectral measurement (ur_automata_hsi), after the 3D scan. On an object
-# name on start_topic: the robot must be in planning.home_pose_name; the HSI
-# frame goes `distance` above scan.center (north pole, looking down), with the
-# rotation about the vertical that needs the smallest motion from home; then
-# the request on acquire_topic, the wait for "measure_complete" with the same
-# object on status_topic, back home, "hsi <object>" on done_topic. MQTT topics
-# in mqtt_bridge.yaml. Scan lights stay off. Speed: the `speed` argument of the
-# launch files, the same as the scan.
+# HSI measurement (ur_automata_hsi). Speed: the `speed` launch argument, as the scan.
 hsi:
-  link:           ee_automata_hsi    # URDF frame of the sensor (ur_automata.urdf.xacro)
-  distance:       0.30               # m, from scan.center to the HSI frame
-  start_topic:    /hsi/start         # in:  object name "object_1"
-  acquire_topic:  /hsi/acquire       # out: "acquire: object_1; hsi pose: [x, y, z, qx, qy, qz, qw]"
-  status_topic:   /hsi/status        # in:  HSI app state, JSON {"state", "object", ...}
-  done_topic:     /hsi/done          # out: "hsi object_1" (or "hsi object_1 ERROR") back in home
-  wait_for_hsi:   true               # false: no HSI app, stay wait_s at the pose and go back
+  link:           ee_automata_hsi    # sensor frame in the URDF
+  distance:       0.30               # m, from scan.center
+  start_topic:    /hsi/start         # in:  object name
+  acquire_topic:  /hsi/acquire       # out: measurement request with the HSI pose
+  status_topic:   /hsi/status        # in:  HSI app state (JSON)
+  done_topic:     /hsi/done          # out: "hsi <object>" (+ " ERROR")
+  wait_for_hsi:   true               # false: no HSI app, wait wait_s at the pose
   wait_s:         3.0
 
-# Robot digital I/O <-> std_msgs/Bool topics: not here, in
-# src/utils/ur_io_ros2_manager/config/config.yaml (read by ur_io_ros2_manager,
-# started by ur_automata_control.launch.py). After a change there: rebuild
-# ur_io_ros2_manager + restart the bring-up.
+# Digital I/O mapping: src/utils/ur_io_ros2_manager/config/config.yaml.

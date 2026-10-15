@@ -1,22 +1,6 @@
-// hsi_node: hyperspectral measurement of the object, after the 3D scan.
-//
-// Waits for an object name on start_topic (from the orchestrator, over MQTT).
-// For each object:
-//   1. checks that the robot is in the home pose (the measurement starts only
-//      from there, so it can never start in the middle of a 3D scan);
-//   2. moves the HSI frame (ee_automata_hsi, URDF) to `distance` above the scan
-//      center (north pole), looking down at it. The rotation about the
-//      vertical axis is the one that needs the smallest joint motion from
-//      home: the arm only stretches out;
-//   3. sends the measurement request with the HSI pose on acquire_topic
-//      ("acquire: object_1; hsi pose: [x, y, z, qx, qy, qz, qw]");
-//   4. waits on status_topic for the HSI app state (JSON) "measure_complete"
-//      with the same object (or wait_s seconds with wait_for_hsi false);
-//   5. goes back home and publishes "hsi object_1" on done_topic
-//      ("hsi object_1 ERROR" if something failed).
-//
-//   ros2 topic pub --once /hsi/start std_msgs/msg/String "{data: object_1}"
-//   ros2 topic pub --once /hsi/status std_msgs/msg/String "{data: '{\"state\": \"measure_complete\", \"object\": \"object_1\"}'}"
+// hsi_node: hyperspectral measurement after the 3D scan. From home only, it
+// puts the HSI frame above the scan center, asks the HSI app for the
+// measurement, waits for it and goes back home. See ur_automata_hsi/README.md.
 
 #include <algorithm>
 #include <atomic>
@@ -48,8 +32,7 @@ static std::mutex g_mutex;
 static std::string g_start_object;               // object name from start_topic, "" = none
 static std::string g_wait_object;                // object of the measurement we wait for, "" = none
 
-// HSI app state on status_topic, e.g.
-//   {"state": "measure_complete", "object": "object_1", "timestamp": ...}
+// HSI app state (JSON): sets g_hsi_done on measure_complete for g_wait_object.
 static void on_hsi_status(const std_msgs::msg::String::SharedPtr msg)
 {
   nlohmann::json status = nlohmann::json::parse(msg->data, nullptr, false);   // false: no exceptions
@@ -68,8 +51,7 @@ static void on_hsi_status(const std_msgs::msg::String::SharedPtr msg)
   }
 }
 
-// Plans to the joint target with Pilz PTP (straight line in joint space), or
-// with OMPL if the line collides, and executes it.
+// Pilz PTP (straight line in joint space), OMPL if that line collides.
 static bool move_to_joints(MoveGroup & move_group, const std::vector<double> & target)
 {
   move_group.setStartStateToCurrentState();
@@ -103,8 +85,8 @@ int main(int argc, char ** argv)
   node->declare_parameter<std::string>("home_pose_name",    "home");
   node->declare_parameter<std::vector<double>>("scan_center", {0.0, 0.0, 0.0});
   node->declare_parameter<double>("distance",               0.30);   // m, HSI frame above scan_center
-  // Speed as in the scan: speed scales a motion planned at
-  // trajectory_scaling_factor, so velocities x speed and accelerations x speed^2.
+  // Same speed as the scan, which slows a plan made at trajectory_scaling_factor:
+  // velocities x speed, accelerations x speed^2.
   node->declare_parameter<double>("trajectory_scaling_factor", 0.4);
   node->declare_parameter<double>("speed",                  0.4);    // 1.0 = trajectory_scaling_factor (max 1.0)
   node->declare_parameter<std::string>("start_topic",       "/hsi/start");
@@ -129,7 +111,6 @@ int main(int argc, char ** argv)
   const bool wait_for_hsi          = node->get_parameter("wait_for_hsi").as_bool();
   const double wait_s              = node->get_parameter("wait_s").as_double();
 
-  // Fixed settings.
   const double home_tolerance = 0.02;   // rad, max joint difference to count as "in home"
   const double yaw_step_deg   = 10.0;   // rotations about the vertical axis tried at the pole
   const double ik_timeout     = 0.05;   // s per IK call
@@ -167,7 +148,6 @@ int main(int argc, char ** argv)
   }
   planning_scene::PlanningScenePtr scene = fetch_planning_scene(node, model, logger);
 
-  // Home joints, from the SRDF.
   moveit::core::RobotState home_state(model);
   home_state.setToDefaultValues();
   if (!home_state.setToDefaultValues(jmg, home_pose_name)) {
@@ -180,8 +160,8 @@ int main(int argc, char ** argv)
   std::vector<double> home_joints;
   home_state.copyJointGroupPositions(jmg, home_joints);
 
-  // Fixed transform from the HSI frame to the camera TCP (both on tool0): the
-  // IK is solved for the TCP, the target is given for the HSI frame.
+  // The IK solver works on the camera TCP: the HSI target is converted with
+  // this fixed transform (both frames are on tool0).
   const Eigen::Isometry3d hsi_to_tcp =
     home_state.getGlobalLinkTransform(hsi_link).inverse() * home_state.getGlobalLinkTransform(ee_link);
 
@@ -227,7 +207,7 @@ int main(int argc, char ** argv)
     bool ok = true;
     bool moved = false;
 
-    // --- 1. The robot must be in home ---
+    // 1. Only from home: never in the middle of a 3D scan.
     moveit::core::RobotStatePtr now_ptr = move_group.getCurrentState(5.0);
     if (!now_ptr) {
       std::fprintf(stderr, "Stato attuale del robot non disponibile (/joint_states?).\n");
@@ -246,9 +226,8 @@ int main(int argc, char ** argv)
       }
     }
 
-    // --- 2. Pose above the pole: the rotation closest to home ---
-    // The HSI looks along the Y axis of its frame: Y points down, X is
-    // horizontal at angle yaw, Z = X x Y.
+    // 2. Above the pole, rotation about the vertical closest to home. The HSI
+    // looks along its Y axis: Y down, X horizontal at angle yaw, Z = X x Y.
     std::vector<double> best_joints;
     double best_cost = std::numeric_limits<double>::infinity();
     double best_yaw_deg = 0.0;
@@ -295,7 +274,7 @@ int main(int argc, char ** argv)
       }
     }
 
-    // --- 3. Move above the pole ---
+    // 3. Move above the pole.
     if (ok) {
       std::printf("Vado sopra il polo nord...\n");
       std::fflush(stdout);
@@ -306,7 +285,8 @@ int main(int argc, char ** argv)
       }
     }
 
-    // --- 4. Measurement request and wait ---
+    // 4. Measurement request and wait. The wait is armed before the request,
+    // so an older measure_complete does not count.
     if (ok) {
       moveit::core::RobotStatePtr at_ptr = move_group.getCurrentState(5.0);
       Eigen::Isometry3d hsi = Eigen::Isometry3d::Identity();
@@ -344,7 +324,7 @@ int main(int argc, char ** argv)
       if (!rclcpp::ok()) ok = false;
     }
 
-    // --- 5. Back home (also after a failed motion), then done ---
+    // 5. Back home (also after a failed motion), then done.
     if (moved && rclcpp::ok()) {
       std::printf("Torno in %s...\n", home_pose_name.c_str());
       std::fflush(stdout);

@@ -1,17 +1,6 @@
 // scan_replay_node: plays back a scan recorded by scan_sequence_node
-// (record:=true). No IK, no sequence planning, no motion planning: the
-// recorded trajectories are executed one after the other, so every work
-// session moves the robot the same way and with the same timing.
-//
-// Before moving, the recording is checked against the current cell:
-//   1) same scan center and radius as automata_config.yaml;
-//   2) the current robot model puts the camera where the recording says, at
-//      the end of every waypoint motion (catches a changed TCP / end effector);
-//   3) no recorded point collides with the current planning scene.
-// Then the robot goes to the first recorded point with a planned motion, and
-// the recorded motions follow. It starts paused, like scan_sequence_node:
-//   ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
-//   ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}
+// (record:=true), after checking it against the current cell (docs/scan.md).
+// Starts paused: ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
 
 #include <atomic>
 #include <chrono>
@@ -93,7 +82,7 @@ int main(int argc, char ** argv)
   auto markers_pub = node->create_publisher<visualization_msgs::msg::MarkerArray>(
     "/scan_waypoints_markers", 10);
 
-  // --- Parameters (same names as scan_sequence_node) ---
+  // Same parameter names as scan_sequence_node.
   node->declare_parameter<std::string>("recording_file",            "");
   node->declare_parameter<std::string>("global_frame",              "world");
   node->declare_parameter<std::string>("planning_group",            "ur_manipulator");
@@ -102,8 +91,7 @@ int main(int argc, char ** argv)
   node->declare_parameter<std::vector<double>>("scan_center",       {0.0, 0.4, 0.5});
   node->declare_parameter<double>     ("scan_radius",               0.35);
   node->declare_parameter<double>     ("scan_planning_time",        5.0);
-  // Speed of the replay relative to the recording: 1.0 = as recorded,
-  // 0.5 = half speed. Only slower: values above 1.0 are refused.
+  // 1.0 = as recorded, 0.5 = half speed; above 1.0 refused.
   node->declare_parameter<double>     ("speed",                     1.0);
 
   const std::string recording_file = node->get_parameter("recording_file").as_string();
@@ -121,7 +109,6 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // --- Load the recording ---
   ScanRecording rec;
   std::string error;
   if (!load_recording(recording_file, rec, error)) {
@@ -133,7 +120,7 @@ int main(int argc, char ** argv)
   std::printf("  %zu movimenti, %d/%d waypoint, %d recovery\n",
               rec.segments.size(), rec.waypoints_reached, rec.waypoints_total, rec.recoveries);
 
-  // --- Check 1: same scan geometry and same robot setup ---
+  // Check 1: same scan geometry and robot setup.
   bool same_setup = rec.planning_group == planning_group && rec.end_effector_link == ee_link &&
                     rec.center.size() == 3 && center.size() == 3 &&
                     std::abs(rec.radius - radius) < 1e-3;
@@ -148,7 +135,6 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // --- MoveIt ---
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
   std::thread spinner([&executor]() { executor.spin(); });
@@ -164,7 +150,7 @@ int main(int argc, char ** argv)
     fetch_planning_scene(node, move_group.getRobotModel(), logger);
   moveit::core::RobotState state(*move_group.getCurrentState());
 
-  // --- Check 2: the current model puts the camera where it was recorded ---
+  // Check 2: the current model puts the camera where it was recorded.
   int pose_mismatches = 0;
   for (const RecordedSegment & seg : rec.segments) {
     for (const std::string & name : seg.joint_names) {
@@ -201,7 +187,7 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // --- Check 3: no recorded point collides with the current scene ---
+  // Check 3: no recorded point collides with the current scene.
   if (!scene) {
     std::fprintf(stderr, "Planning scene non disponibile: impossibile verificare le collisioni.\n");
     rclcpp::shutdown();
@@ -227,11 +213,9 @@ int main(int argc, char ** argv)
   std::printf("Controlli superati: modello e scena coerenti con la registrazione. "
               "Durata dei movimenti registrati: %.1f s (speed %.2f)\n", total_motion_s, speed);
 
-  // --- Gray camera frustums on the recorded waypoints ---
   visualization_msgs::msg::MarkerArray markers = make_frustum_markers(rec, global_frame);
   publish_first_frustums(markers_pub, markers);
 
-  // --- Go to the first recorded point with a planned motion ---
   if (!wait_while_paused()) {
     spinner.join();
     return 0;
@@ -261,7 +245,6 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // --- Replay ---
   auto t0 = std::chrono::steady_clock::now();
   int waypoints_done = 0;
   bool completed = true;
@@ -281,7 +264,7 @@ int main(int argc, char ** argv)
     double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (seg.waypoint >= 0) {
       ++waypoints_done;
-      // The camera is on waypoint seg.waypoint: this is where the photo will be taken.
+      // No photo handshake here: see scan_tsp_node.
       set_frustum_reached(markers, k);
       markers_pub->publish(markers);
     }

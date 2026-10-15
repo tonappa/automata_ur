@@ -1,8 +1,5 @@
-# Limits for the Pilz planner (LIN e CIRC; PTP usa joint_limits.yaml).
-# Il nodo di scansione li scala con trajectory_scaling_factor.
-# acc/dec erano 2.25 / -5.0 (default del Setup Assistant): con CIRC sulla
-# sfera le rampe portavano shoulder_pan e elbow a 6.6-7.0 rad/s2 contro il
-# limite di 5 di joint_limits.yaml e l'arco veniva scartato (dp10).
+# Pilz LIN and CIRC limits (PTP uses joint_limits.yaml). Lower than the
+# defaults: with those, CIRC arcs on the sphere exceeded the joint acceleration limits.
 cartesian_limits:
   max_trans_vel: 1.0
   max_trans_acc: 1.5

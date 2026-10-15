@@ -39,7 +39,6 @@ def generate_launch_description():
                 "scan_center":       [float(v) for v in s["center"]],
                 "hsi_link":          h["link"],
                 "distance":          float(h["distance"]),
-                # Same meaning as the speed of the scan (scan_tsp_node).
                 "trajectory_scaling_factor": float(p["trajectory_scaling_factor"]),
                 "speed":             ParameterValue(LaunchConfiguration("speed"), value_type=float),
                 "start_topic":       h["start_topic"],

@@ -1,13 +1,8 @@
-// scan_sequence_node: plans and executes the spherical scan (calibration run).
-//   FASE 1: waypoints on the sphere, in ring or sector order; for each one every
-//           valid IK configuration (pitch x IK branches) that collides with
-//           nothing and leaves the whole platform visible to the camera.
-//   FASE 2: a layered dynamic program (DP) picks one configuration per
-//           waypoint so that the elbow and the TCP travel as little as possible.
-//   FASE 3: execution, segment by segment, through the planner chain (Pilz PTP,
-//           then OMPL); with record:=true every executed motion is saved for
-//           scan_replay_node.
-// dry_run:=true stops after FASE 2 and prints the forecast and the arm envelope.
+// scan_sequence_node: plans and executes the spherical scan sector by sector
+// (older method, see docs/scan.md). Phase 1: valid IK candidates per waypoint;
+// phase 2: DP picks one per waypoint; phase 3: execution through the planner
+// chain. record:=true saves the motions for scan_replay_node; dry_run:=true
+// stops after phase 2.
 
 #include <algorithm>
 #include <atomic>
@@ -57,9 +52,7 @@
 using visualization_msgs::msg::Marker;
 using visualization_msgs::msg::MarkerArray;
 
-// ============================================================================
 // Marker colors
-// ============================================================================
 struct Color { float r, g, b; };
 
 const Color COLOR_GRAY   = {0.5f, 0.5f, 0.5f};  // not visited yet
@@ -69,9 +62,7 @@ const Color COLOR_RED    = {1.0f, 0.0f, 0.0f};  // failed
 const Color COLOR_BLUE   = {0.0f, 0.4f, 1.0f};  // fallback waypoint
 const Color COLOR_ORANGE = {1.0f, 0.5f, 0.0f};  // view blocked by a scene object
 
-// ============================================================================
 // ANSI escape codes for the in-place table
-// ============================================================================
 namespace ansi {
   constexpr const char * CLEAR_SCREEN = "\033[2J";
   constexpr const char * CURSOR_HOME  = "\033[H";
@@ -86,9 +77,7 @@ namespace ansi {
   constexpr const char * CYAN         = "\033[36m";
 }
 
-// ============================================================================
 // Terminal raw-mode + key reader (spacebar = pause/resume, Q = quit)
-// ============================================================================
 static std::atomic<bool> g_paused{true};   // start paused, wait for first SPACE
 static std::atomic<bool> g_quit{false};
 static std::atomic<bool> g_redraw_request{true};
@@ -110,8 +99,7 @@ static void restore_terminal()
 static void setup_raw_terminal()
 {
   if (!isatty(STDIN_FILENO)) {
-    // No interactive terminal (e.g. lanciato via ros2 launch): tasti disabilitati.
-    // Resta in pausa: lo start arriva dal service /scan_sequence_node/start.
+    // Not a TTY (e.g. ros2 launch): no keys, start via the /start service.
     g_stdin_is_tty = false;
     return;
   }
@@ -150,40 +138,37 @@ static void key_reader_loop()
   }
 }
 
-// ============================================================================
 // Per-waypoint table state
-// ============================================================================
 enum class WpStatus {
   PENDING,
   RUNNING,
   DONE,
   HOMING,
   FAIL,
-  UNREACHABLE,     // nessuna configurazione valida trovata in fase di enumerazione
-  OCCLUDED,        // un oggetto della scena sta fra la camera e il centro: scartato
-  FALLBACK_ORIGIN  // original wp unreachable; a nearby fallback was executed instead
+  UNREACHABLE,     // no valid configuration
+  OCCLUDED,        // view blocked by a scene object
+  FALLBACK_ORIGIN  // a nearby fallback point was executed instead
 };
 
 struct WpRow {
   geometry_msgs::msg::Pose target;
   WpStatus status = WpStatus::PENDING;
-  bool actual_set = false;            // true if actual_pose has been filled
-  geometry_msgs::msg::Pose actual;    // pose actually reached (may differ when lock_pitch=false)
-  bool reoriented = false;            // true if actual orientation differs from target
-  bool fallback_set = false;          // true if a nearby fallback pose was found
-  geometry_msgs::msg::Pose fallback;  // fallback pose executed instead of target
+  bool actual_set = false;
+  geometry_msgs::msg::Pose actual;    // reached (differs with lock_pitch=false)
+  bool reoriented = false;
+  bool fallback_set = false;
+  geometry_msgs::msg::Pose fallback;
 };
 
-// Convert quaternion (geometry_msgs) to RPY in degrees, XYZ-Euler convention
+// Quaternion -> roll, pitch, yaw (deg).
 static Eigen::Vector3d quat_to_rpy_deg(const geometry_msgs::msg::Quaternion & q)
 {
   Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
-  // eulerAngles(0,1,2) returns intrinsic XYZ (roll-pitch-yaw) in radians
   Eigen::Vector3d rpy = eq.toRotationMatrix().eulerAngles(0, 1, 2);
   return rpy * (180.0 / M_PI);
 }
 
-// Smallest angle (radians) between two unit quaternions
+// Angle (rad) between two unit quaternions.
 static double quat_angle_diff(
   const geometry_msgs::msg::Quaternion & a,
   const geometry_msgs::msg::Quaternion & b)
@@ -225,9 +210,7 @@ static const char * status_color(WpStatus s)
   return ansi::RESET;
 }
 
-// Build alternating pitch-offset sequence in radians: [0, +step, -step, +2·step, -2·step, ...]
-// up to ±range (inclusive). Used when lock_pitch=false to sample roll-around-Y_TCP
-// candidates for IK.
+// Rotations about Y_TCP tried for the IK (rad): 0, +step, -step, +2step, ... up to +-range.
 static std::vector<double> build_pitch_offsets_rad(double range_deg, double step_deg)
 {
   std::vector<double> offsets;
@@ -242,20 +225,11 @@ static std::vector<double> build_pitch_offsets_rad(double range_deg, double step
   return offsets;
 }
 
-// ----------------------------------------------------------------------------
-// Linea di vista camera -> centro contro gli oggetti della scena.
-// Segmento dal waypoint al centro: se attraversa un oggetto del mondo la foto
-// da quel punto inquadra l'ostacolo (es. lo stelo della piattaforma), quindi
-// il waypoint va scartato prima ancora di cercare le IK.
-// Ignorati: il marker del centro, l'oggetto da scansionare, i keep-out di
-// margine e le intersezioni entro 3 cm dal centro (il disco sotto l'oggetto:
-// i raggi dell'emisfero inferiore lo attraversano a 4 mm dal centro).
-// Known limit: un solo raggio lungo l'asse ottico; campionare un cono di raggi
-// se conta l'apertura della camera.
-// ----------------------------------------------------------------------------
+// Line of sight waypoint -> center against the scene objects: if blocked, the
+// waypoint is dropped before any IK. Ignored: the object, keep-outs and hits
+// within 3 cm of the center (the disk under the object). Single optical-axis ray.
 
-// Moller-Trumbore: intersezione raggio (origin, dir unitario) / triangolo.
-// Ritorna true e la distanza t lungo il raggio se il raggio colpisce il triangolo.
+// Moller-Trumbore ray/triangle intersection (unit dir); t = distance along the ray.
 static bool ray_hits_triangle(
   const Eigen::Vector3d & origin, const Eigen::Vector3d & dir,
   const Eigen::Vector3d & v0, const Eigen::Vector3d & v1, const Eigen::Vector3d & v2,
@@ -266,7 +240,7 @@ static bool ray_hits_triangle(
   Eigen::Vector3d e2 = v2 - v0;
   Eigen::Vector3d p = dir.cross(e2);
   double det = e1.dot(p);
-  if (std::abs(det) < eps) return false;   // raggio parallelo al triangolo
+  if (std::abs(det) < eps) return false;   // ray parallel to the triangle
   double inv_det = 1.0 / det;
   Eigen::Vector3d s = origin - v0;
   double u = inv_det * s.dot(p);
@@ -293,7 +267,7 @@ static bool is_scene_occluding(
   const double seg_len = seg.norm();
   if (seg_len < 1e-6) return false;
   const Eigen::Vector3d dir = seg / seg_len;
-  // Conta solo le intersezioni sul segmento e non a ridosso del centro.
+  // Only hits on the segment and not next to the center count.
   auto hit_counts = [&](double t) { return t > 0.0 && t < seg_len - ignore_near_center; };
 
   collision_detection::WorldConstPtr world = scene.getWorld();
@@ -306,8 +280,7 @@ static bool is_scene_occluding(
       const Eigen::Isometry3d & pose = obj->global_shape_poses_[k];
 
       if (shape->type == shapes::MESH) {
-        // Raggio portato nel frame della mesh: una trasformazione sola invece
-        // di una per vertice.
+        // Ray moved to the mesh frame: one transform instead of one per vertex.
         const auto * mesh = static_cast<const shapes::Mesh *>(shape);
         Eigen::Isometry3d inv = pose.inverse();
         Eigen::Vector3d o = inv * from;
@@ -326,7 +299,7 @@ static bool is_scene_occluding(
           }
         }
       } else {
-        // Primitive (box, cilindro, sfera): geometric_shapes fa il raycast.
+        // Primitive shapes: geometric_shapes does the raycast.
         std::unique_ptr<bodies::Body> body(bodies::createBodyFromShape(shape));
         if (!body) continue;
         body->setPose(pose);
@@ -344,17 +317,11 @@ static bool is_scene_occluding(
   return false;
 }
 
-// ----------------------------------------------------------------------------
-// Platform visibility (the arm must not hide the platform)
-// ----------------------------------------------------------------------------
-// The photo must show the whole platform disk, not only the object in the
-// middle: QR codes are applied all around its circumference, on top and below.
-// Sight lines go from the camera (TCP) to the disk center and to 24 points on
-// the disk rim. Each line is a thin cylinder in a separate collision world, and
-// the real collision meshes of the arm are checked against it: the link bodies
-// are offset from the line through the joint origins (0.136 m on the UR5 upper
-// arm), so a skeleton of joint origins would miss them. The end-effector links
-// carry the camera and are ignored (see make_sight_scene).
+// Platform visibility: the arm must not hide the platform disk (QR codes all
+// around it). Sight lines camera -> disk center and 24 rim points are thin
+// cylinders in a separate collision world, checked against the real arm meshes
+// (joint origins alone would miss the offset link bodies). End-effector links
+// are ignored.
 
 // Collision world that only holds the sight lines ("sight" object).
 static planning_scene::PlanningScenePtr make_sight_scene(const moveit::core::RobotModelConstPtr & model)
@@ -367,7 +334,7 @@ static planning_scene::PlanningScenePtr make_sight_scene(const moveit::core::Rob
   return sight_scene;
 }
 
-// Puts the sight lines from `camera` to the disk (center + rim) in the sight world.
+// Sight lines from `camera` to the disk center and rim.
 static void set_sight_lines(planning_scene::PlanningScene & sight_scene,
                             const Eigen::Vector3d & camera, const Eigen::Vector3d & center,
                             double disk_radius, double margin)
@@ -407,11 +374,9 @@ static bool is_platform_hidden(const planning_scene::PlanningScene & sight_scene
   return res.collision;
 }
 
-// ============================================================================
 // Render the full table in place
-// ============================================================================
 static std::mutex g_render_mutex;
-static std::string g_sequence_summary;   // riepilogo della sequenza pianificata (fase 2)
+static std::string g_sequence_summary;   // planned sequence summary (phase 2)
 
 static void render_table(const std::vector<WpRow> & rows, bool lock_pitch,
                          const std::string & planner_label)
@@ -420,7 +385,6 @@ static void render_table(const std::vector<WpRow> & rows, bool lock_pitch,
 
   std::printf("%s%s", ansi::CURSOR_HOME, ansi::CLEAR_SCREEN);
 
-  // Header banner
   const char * mode_str = g_paused.load() ? "PAUSED " : "RUNNING";
   const char * mode_col = g_paused.load() ? ansi::YELLOW : ansi::GREEN;
   std::printf("%s%sUR_AUTOMATA SCAN (sequence)  [%s%s%s]%s   %sSPACE%s = pause/resume   %sQ%s = quit\n",
@@ -441,7 +405,6 @@ static void render_table(const std::vector<WpRow> & rows, bool lock_pitch,
   }
   std::printf("\n");
 
-  // Column header
   std::printf("%s%4s | %-32s | %-22s | %s%s\n",
     ansi::BOLD, "#", "TARGET (x  y  z  /  R  P  Y°)", "STATUS", "ACTUAL (R  P  Y° if changed)",
     ansi::RESET);
@@ -479,9 +442,7 @@ static void render_table(const std::vector<WpRow> & rows, bool lock_pitch,
   g_redraw_request = false;
 }
 
-// ============================================================================
 // Marker helpers
-// ============================================================================
 static Marker make_sphere_marker(int id, const geometry_msgs::msg::Pose & pose,
                                  const std::string & frame, const Color & c)
 {
@@ -533,10 +494,8 @@ static Marker make_arrow_marker(int id, const geometry_msgs::msg::Pose & pose,
   return m;
 }
 
-// Layout dell'array unificato: per ogni waypoint i ci sono 2 marker consecutivi,
-//   markers[2*i]   → SPHERE  (namespace "scan_waypoints")
-//   markers[2*i+1] → ARROW   (namespace "scan_orientations")
-// Stesso colore su entrambi così sphere e arrow cambiano colore insieme.
+// Two markers per waypoint i: markers[2*i] = sphere, markers[2*i+1] = arrow,
+// same color.
 static void set_marker_color(MarkerArray & arr, size_t i, const Color & c)
 {
   arr.markers[2 * i].color.r     = c.r;
@@ -547,16 +506,13 @@ static void set_marker_color(MarkerArray & arr, size_t i, const Color & c)
   arr.markers[2 * i + 1].color.b = c.b;
 }
 
-// Shrink the sphere marker for a FALLBACK_ORIGIN waypoint so it's visually
-// distinct from normal markers (small gray dot instead of the usual size).
+// Small gray dot for a FALLBACK_ORIGIN waypoint.
 static void set_marker_small(MarkerArray & arr, size_t i)
 {
   arr.markers[2 * i].scale.x = arr.markers[2 * i].scale.y = arr.markers[2 * i].scale.z = 0.010;
 }
 
-// Build a look-at pose: position at `pos`, Y-axis pointing toward `center`.
-// Duplicates the logic in sphere_waypoint_generator.cpp so we don't need to
-// expose it as a public symbol.
+// Pose at `pos` with Y toward `center` (same as sphere_waypoint_generator.cpp).
 static geometry_msgs::msg::Pose make_lookat(
   const Eigen::Vector3d & pos, const Eigen::Vector3d & center)
 {
@@ -590,18 +546,15 @@ static void publish_markers(
   pub->publish(arr);
 }
 
-// ============================================================================
-// Candidati IK e seed per i rami
-// ============================================================================
-// Una configurazione valida che raggiunge un waypoint (o il suo fallback).
+// A valid joint configuration for a waypoint (or its fallback point).
 struct Candidate {
-  std::vector<double> joints;          // giunti del gruppo, nell'ordine del JointModelGroup
-  double pitch_offset_rad = 0.0;       // rotazione attorno a Y_TCP applicata alla posa base
-  geometry_msgs::msg::Pose pose;       // posa effettivamente usata (con il pitch applicato)
-  bool is_fallback = false;            // true se la posa e' un punto vicino, non il waypoint
+  std::vector<double> joints;          // group order
+  double pitch_offset_rad = 0.0;       // rotation about Y_TCP
+  geometry_msgs::msg::Pose pose;       // pose used, pitch applied
+  bool is_fallback = false;            // a nearby point, not the waypoint
 };
 
-// True se `joints` coincide (entro 1e-3 rad) con un candidato gia' in `list`.
+// True if `joints` matches (1e-3 rad) a candidate already in `list`.
 static bool is_duplicate(const std::vector<double> & joints, const std::vector<Candidate> & list)
 {
   for (const auto & c : list) {
@@ -614,7 +567,7 @@ static bool is_duplicate(const std::vector<double> & joints, const std::vector<C
   return false;
 }
 
-// Posizione dei sei giunti UR dentro il JointModelGroup (-1 = non trovato).
+// Index of the six UR joints in the group (-1 = not found).
 struct UrJointIndex { int pan = -1, lift = -1, elbow = -1, w1 = -1, w2 = -1, w3 = -1; };
 
 static UrJointIndex find_ur_joint_indices(const moveit::core::JointModelGroup * jmg)
@@ -634,7 +587,7 @@ static UrJointIndex find_ur_joint_indices(const moveit::core::JointModelGroup * 
   return idx;
 }
 
-// Riporta un angolo in (-pi, pi]: cosi' i seed restano dentro i limiti UR (+-2pi).
+// Angle to (-pi, pi], so seeds stay inside the UR limits (+-2pi).
 static double wrap_pi(double a)
 {
   while (a >  M_PI) a -= 2.0 * M_PI;
@@ -642,12 +595,8 @@ static double wrap_pi(double a)
   return a;
 }
 
-// Otto seed per TRAC-IK a partire da una configurazione: tutte le combinazioni
-// di polso (dritto/ribaltato), gomito (su/giu') e spalla (sx/dx). Il polso
-// ribaltato e' esatto; gomito e spalla sono approssimazioni geometriche.
-// Servono solo a far partire il solver vicino a un ramo diverso: e' poi
-// TRAC-IK a convergere sulla soluzione esatta di quel ramo. Se in futuro
-// servono tutti gli 8 rami con certezza, sostituire con l'IK analitica UR.
+// Eight TRAC-IK seeds, one per branch (wrist / elbow / shoulder flipped).
+// Approximate: they only start the solver near another branch.
 static std::vector<std::vector<double>> make_branch_seeds(
   const std::vector<double> & base, const UrJointIndex & j)
 {
@@ -655,24 +604,24 @@ static std::vector<std::vector<double>> make_branch_seeds(
   seeds.push_back(base);
   if (j.pan < 0 || j.lift < 0 || j.elbow < 0 || j.w1 < 0 || j.w2 < 0 || j.w3 < 0) return seeds;
 
-  // Rapporto avambraccio/braccio (a3/a2), ~0.92 per tutta la famiglia UR.
+  // Forearm / upper arm (a3/a2), ~0.92 on every UR.
   const double r = 0.92;
 
   for (int mask = 1; mask < 8; ++mask) {
     std::vector<double> q = base;
-    if (mask & 1) {   // polso ribaltato
+    if (mask & 1) {   // wrist flipped
       q[j.w1] += M_PI;
       q[j.w2]  = -q[j.w2];
       q[j.w3] += M_PI;
     }
-    if (mask & 2) {   // gomito specchiato rispetto alla retta spalla-polso
+    if (mask & 2) {   // elbow mirrored about the shoulder-wrist line
       double e     = q[j.elbow];
       double gamma = std::atan2(r * std::sin(e), 1.0 + r * std::cos(e));
       q[j.lift]  += 2.0 * gamma;
       q[j.elbow]  = -e;
       q[j.w1]    += 2.0 * e - 2.0 * gamma;
     }
-    if (mask & 4) {   // spalla dall'altro lato: base a 180 gradi, braccio specchiato
+    if (mask & 4) {   // shoulder on the other side
       q[j.pan]  += M_PI;
       q[j.lift]  = -M_PI - q[j.lift];
       q[j.elbow] = -q[j.elbow];
@@ -685,25 +634,19 @@ static std::vector<std::vector<double>> make_branch_seeds(
   return seeds;
 }
 
-// ============================================================================
-// Arm swing measurement
-// ============================================================================
-// How far the elbow and the TCP travel in space during a motion. A segment
-// between two neighbouring waypoints moves the elbow by a few centimeters; a
-// big swing (branch change, OMPL detour) moves it by tens of centimeters.
+// Arm swings: elbow and TCP path length of a motion.
 struct Sweep {
   double elbow_m = 0.0;
   double tcp_m = 0.0;
 };
 
-// One executed motion, for the final report.
 struct SegmentLog {
   std::string what;      // "#12" = waypoint 12 (table numbering)
   std::string planner;   // planner that produced the executed plan
   Sweep sweep;
 };
 
-// Elbow and TCP path length along a list of joint configurations (group order).
+// Elbow and TCP path along joint configurations (group order).
 static Sweep sweep_of_path(const std::vector<std::vector<double>> & path,
                            const moveit::core::RobotState & reference,
                            const moveit::core::JointModelGroup * jmg,
@@ -728,8 +671,7 @@ static Sweep sweep_of_path(const std::vector<std::vector<double>> & path,
   return sweep;
 }
 
-// Points of the straight line in joint space from a to b (the path Pilz PTP
-// follows), one sample every ~3 degrees on the joint that moves the most.
+// Straight joint-space line a -> b (the Pilz PTP path), a sample every ~3 deg.
 static std::vector<std::vector<double>> joint_line(const std::vector<double> & a,
                                                    const std::vector<double> & b)
 {
@@ -748,8 +690,7 @@ static std::vector<std::vector<double>> joint_line(const std::vector<double> & a
   return path;
 }
 
-// Points of a planned trajectory, converted to the joint order of the group
-// (the trajectory may list the joints in a different order).
+// Trajectory points in the joint order of the group.
 static std::vector<std::vector<double>> trajectory_path(
   const moveit::planning_interface::MoveGroupInterface::Plan & plan,
   const moveit::core::RobotState & reference,
@@ -769,28 +710,23 @@ static std::vector<std::vector<double>> trajectory_path(
 }
 
 
-// ============================================================================
-// Catena di planner
-// ============================================================================
+// Planner chain
 struct PlannerChoice {
-  std::string pipeline;   // es. "pilz_industrial_motion_planner" oppure "ompl"
-  std::string planner;    // es. "PTP" oppure "RRTConnectkConfigDefault"
-  bool is_circ = false;   // Pilz CIRC: vuole il vincolo "center" e uno start sulla sfera
+  std::string pipeline;   // e.g. "pilz_industrial_motion_planner", "ompl"
+  std::string planner;    // e.g. "PTP", "RRTConnectkConfigDefault"
+  bool is_circ = false;   // needs the "center" constraint and a start on the sphere
   std::string label() const { return pipeline + "/" + planner; }
 };
 
 struct PlannerSetup {
-  std::vector<PlannerChoice> chain;           // provati in ordine, ci si ferma al primo che riesce
-  moveit_msgs::msg::Constraints circ_center;  // vincolo di percorso richiesto da CIRC
+  std::vector<PlannerChoice> chain;           // tried in order, first success wins
+  moveit_msgs::msg::Constraints circ_center;  // path constraint for CIRC
 };
 
-// Quante volte ogni planner ha prodotto il piano poi eseguito. E' la metrica con
-// cui si confrontano i run: l'obiettivo e' avere quasi tutto su CIRC/PTP e OMPL
-// vicino a zero. Include anche le recovery e il ritorno a home.
+// Executed plans per planner (the metric to compare runs: OMPL near zero).
 static std::map<std::string, int> g_planner_hits;
 
-// Calibration recording (record:=true): every executed motion, in order, and
-// how many of them were recoveries. Saved at the end of a complete scan.
+// record:=true: executed motions, saved at the end of a complete scan.
 static std::vector<RecordedSegment> g_recorded;
 static int g_recoveries = 0;
 
@@ -814,8 +750,7 @@ static RecordedSegment to_recorded(const std::string & label, int waypoint,
   return seg;
 }
 
-// Traduce la stringa del YAML ("ompl", "pilz_ptp", "pilz_lin", "pilz_circ",
-// "stomp") in (pipeline, planner_id). Ritorna false se non e' riconosciuta.
+// YAML name ("ompl", "pilz_ptp", ...) -> (pipeline, planner_id); false if unknown.
 static bool resolve_planner(const std::string & name, const std::string & ompl_algorithm,
                             PlannerChoice & out)
 {
@@ -835,13 +770,9 @@ static bool resolve_planner(const std::string & name, const std::string & ompl_a
   return true;
 }
 
-// Vincolo di percorso che Pilz CIRC usa come centro dell'arco: nome "center",
-// una sola PositionConstraint sul link del TCP, il centro in primitive_poses.
-// La constraint_region resta di proposito SENZA primitives: Pilz legge solo la
-// posizione, mentre il response adapter ValidateSolution ricontrolla il percorso
-// anche contro req.path_constraints. Con una regione vera (il TCP "dentro" il
-// centro della sfera) ogni arco verrebbe scartato; senza regione il vincolo
-// risulta disabilitato lato MoveIt e la validazione lo ignora.
+// Arc center for Pilz CIRC: a PositionConstraint named "center". The region
+// has NO primitives on purpose: ValidateSolution also checks path_constraints,
+// and a real region would reject every arc.
 static moveit_msgs::msg::Constraints make_circ_center_constraint(
   const std::string & frame, const std::string & link, const Eigen::Vector3d & center)
 {
@@ -864,8 +795,7 @@ static moveit_msgs::msg::Constraints make_circ_center_constraint(
   return constraints;
 }
 
-// Nome leggibile del codice d'errore di plan(). I codici sono quelli di
-// moveit_msgs/MoveItErrorCodes; quelli non elencati escono come numero.
+// Readable MoveItErrorCodes name (others as a number).
 static std::string plan_error_name(int code)
 {
   using Codes = moveit_msgs::msg::MoveItErrorCodes;
@@ -885,13 +815,8 @@ static std::string plan_error_name(int code)
   }
 }
 
-// True se l'ultimo punto della traiettoria coincide con il target in giunti.
-// Serve per CIRC: Pilz riceve il goal in joint space ma ricava i giunti lungo
-// l'arco con l'IK, seme = campione precedente, e puo' finire su un ramo IK
-// diverso da quello scelto dalla DP. In quel caso il tratto successivo
-// partirebbe da uno stato non previsto, quindi il piano va scartato.
-// Known limit: soglia fissa a 0.01 rad, i rami IK distano decimi di radiante;
-// portarla in configurazione solo se comparissero scarti ingiustificati.
+// True if the trajectory ends on the joint target (0.01 rad). For CIRC: Pilz
+// solves the arc with IK and may end on another IK branch than the DP chose.
 static bool trajectory_ends_at_target(
   const moveit::planning_interface::MoveGroupInterface::Plan & plan,
   const moveit::planning_interface::MoveGroupInterface & move_group)
@@ -906,8 +831,7 @@ static bool trajectory_ends_at_target(
     move_group.getRobotModel()->getJointModelGroup(move_group.getName());
   if (jmg == nullptr) return false;
 
-  // Il target impostato dal chiamante, associato per nome: l'ordine dei giunti
-  // nella traiettoria non e' per forza quello delle variabili del gruppo.
+  // Matched by joint name: the trajectory order may differ from the group.
   std::vector<double> target_values;
   move_group.getJointValueTarget(target_values);
   const std::vector<std::string> & target_names = jmg->getVariableNames();
@@ -920,19 +844,14 @@ static bool trajectory_ends_at_target(
 
   for (size_t k = 0; k < jt.joint_names.size(); ++k) {
     auto it = target.find(jt.joint_names[k]);
-    if (it == target.end()) continue;   // giunto fuori dal gruppo: ignorato
+    if (it == target.end()) continue;   // not in the group
     if (std::abs(wrap_pi(last[k] - it->second)) > 0.01) return false;
   }
   return true;
 }
 
-// plan() lungo la catena di planner: si prova un planner alla volta nell'ordine
-// della catena e ci si ferma al primo che riesce. Il target (joint / pose /
-// named) va impostato PRIMA dal chiamante.
-// `allow_circ` = false salta Pilz CIRC: senza uno start gia' sulla sfera di
-// scansione i due estremi dell'arco hanno raggi diversi e CIRC fallisce sempre
-// (e' il caso di home e delle pose di recovery).
-// `used_label` (optional) receives the label of the planner that succeeded.
+// plan() through the planner chain, first success wins; the caller sets the
+// target first. allow_circ = false skips CIRC (start not on the sphere).
 static bool plan_with_fallback(
   moveit::planning_interface::MoveGroupInterface & move_group,
   moveit::planning_interface::MoveGroupInterface::Plan & plan,
@@ -946,9 +865,7 @@ static bool plan_with_fallback(
 
     move_group.setPlanningPipelineId(choice.pipeline);
     move_group.setPlannerId(choice.planner);
-    // Il vincolo "center" serve solo a CIRC: gli altri planner devono partire
-    // senza path constraints, quindi si mette qui e si toglie subito dopo,
-    // riuscito o fallito che sia il tentativo.
+    // The "center" constraint is for CIRC only: set and cleared around it.
     if (choice.is_circ) move_group.setPathConstraints(planners.circ_center);
 
     moveit::core::MoveItErrorCode code = move_group.plan(plan);
@@ -979,13 +896,12 @@ static bool go_home(moveit::planning_interface::MoveGroupInterface & move_group,
 {
   RCLCPP_WARN(logger, "Recovery: moving back to '%s' ...", home_pose_name.c_str());
 
-  // Drop any active path constraint (e.g. the look-at orientation constraint
-  // used in free-pitch mode) — the home pose cannot satisfy it.
+  // Home cannot satisfy the look-at path constraint of free-pitch mode.
   move_group.clearPathConstraints();
   move_group.setNamedTarget(home_pose_name);
 
   moveit::planning_interface::MoveGroupInterface::Plan home_plan;
-  // CIRC escluso: home e le pose di recovery non stanno sulla sfera di scansione.
+  // No CIRC: home and recovery poses are not on the sphere.
   if (!plan_with_fallback(move_group, home_plan, planners, false, logger)) {
     RCLCPP_ERROR(logger, "Recovery failed: could not plan to '%s'.", home_pose_name.c_str());
     return false;
@@ -1001,9 +917,7 @@ static bool go_home(moveit::planning_interface::MoveGroupInterface & move_group,
   return true;
 }
 
-// Recovery a due livelli: prima la posa dell'emisfero corrente, poi `home`.
-// Da certe configurazioni basse una delle due non si pianifica (es. la retta
-// PTP passa per un'autocollisione e OMPL sfiora il disco), l'altra spesso si'.
+// Recovery: the pose of the current hemisphere first, then `home`.
 static bool recover_to_safe_pose(moveit::planning_interface::MoveGroupInterface & move_group,
                                  const PlannerSetup & planners,
                                  const std::string & recovery_pose_name,
@@ -1018,7 +932,7 @@ static bool recover_to_safe_pose(moveit::planning_interface::MoveGroupInterface 
   return go_home(move_group, planners, home_pose_name, logger);
 }
 
-// Block until SPACE is pressed (or quit). Redraws the table on every toggle.
+// Blocks until SPACE (or quit).
 static void wait_while_paused(const std::vector<WpRow> & rows, bool lock_pitch,
                               const std::string & planner_label)
 {
@@ -1032,25 +946,17 @@ static void wait_while_paused(const std::vector<WpRow> & rows, bool lock_pitch,
   }
 }
 
-// ============================================================================
 // MAIN
-// ============================================================================
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node   = rclcpp::Node::make_shared("scan_sequence_node");
   auto logger = node->get_logger();
 
-  // Quiet down ROS/MoveIt info-spam so the table layout stays readable.
-  // WARN/ERROR/FATAL still pass through.
+  // Only warnings and errors, so the table stays readable.
   rcutils_logging_set_default_logger_level(RCUTILS_LOG_SEVERITY_WARN);
 
-  // --- Service interface: /scan_sequence_node/start e /scan_sequence_node/pause ---
-  // Lo scan parte sempre in pausa. Per farlo partire (o riprendere dopo una pausa)
-  //   ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
-  // Per metterlo in pausa mid-scan
-  //   ros2 service call /scan_sequence_node/pause std_srvs/srv/Trigger {}
-  // I tasti SPACE/Q restano attivi se il nodo gira su un TTY interattivo.
+  // Starts paused: /scan_sequence_node/start and /pause (or SPACE / Q on a TTY).
   using TriggerSrv = std_srvs::srv::Trigger;
 
   auto start_srv = node->create_service<TriggerSrv>(
@@ -1075,7 +981,6 @@ int main(int argc, char ** argv)
       res->message = "scan paused";
     });
 
-  // --- Parameters ---
   node->declare_parameter<std::string>("global_frame",              "world");
   node->declare_parameter<std::string>("planning_group",            "ur_manipulator");
   node->declare_parameter<std::string>("end_effector_link",         "ee_automata_tcp");
@@ -1096,14 +1001,12 @@ int main(int argc, char ** argv)
   node->declare_parameter<bool>       ("scan_stagger_rings",                false);
   node->declare_parameter<bool>       ("scan_adaptive_rings",               false);
   node->declare_parameter<bool>       ("scan_occlusion_check",              false);
-  // Platform visibility check: disk radius (m) and thickness of the sight lines
-  // (m, i.e. how close an arm link may come to a line of sight).
+  // Platform visibility: disk radius (m), sight line thickness (m).
   node->declare_parameter<double>     ("scan_occlusion_disk_radius",        0.15);
   node->declare_parameter<double>     ("scan_occlusion_margin",             0.01);
   node->declare_parameter<bool>       ("scan_fallback_search",              false);
   node->declare_parameter<double>     ("scan_fallback_radius_mm",           20.0);
-  // Catena di planner, provati in ordine. Il default riproduce il comportamento
-  // storico: retta in joint space, OMPL quando la retta collide.
+  // Planner chain, tried in order.
   node->declare_parameter<std::vector<std::string>>("scan_planners",
                                                     std::vector<std::string>{"pilz_ptp", "ompl"});
   node->declare_parameter<std::string>("scan_ompl_algorithm",         "RRTConnect");
@@ -1113,27 +1016,19 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_enum_ik_timeout",         0.003);
   node->declare_parameter<double>     ("scan_planning_time",           5.0);
   node->declare_parameter<int>        ("scan_planning_attempts",       1);
-  // When no planner finds a path in scan_planning_time, try again with each of
-  // these planning times before going to the recovery pose. Empty = go to the
-  // recovery pose right away. Planning time only matters in the calibration
-  // run: the replay does not plan.
+  // Longer planning times tried before the recovery pose (empty = none).
   node->declare_parameter<std::vector<double>>("scan_retry_planning_times", std::vector<double>{});
-  // OMPL algorithm for those retries. RRTConnect grows a tree from both ends
-  // and finds narrow passages that RRTstar (one tree) misses for minutes.
+  // RRTConnect finds narrow passages that RRTstar misses for minutes.
   node->declare_parameter<std::string>("scan_retry_ompl_algorithm", "RRTConnect");
-  // Sectors per hemisphere (0 = classic ring-by-ring order). See order_by_sectors().
+  // Sectors per hemisphere (0 = ring by ring).
   node->declare_parameter<int>        ("scan_sectors",                 0);
-  // Rotation of the sectors (deg, counterclockwise seen from above): 0 = sector 0
-  // centered on the robot side, 45 = boundaries on the robot -> center axis.
+  // deg, counterclockwise from above; 0 = sector 0 centered on the robot side.
   node->declare_parameter<double>     ("scan_sector_offset_deg",       0.0);
-  // DP segment cost = elbow path + TCP path (m) + this weight x joint distance (rad).
+  // DP cost = elbow path + TCP path (m) + this x joint distance (rad).
   node->declare_parameter<double>     ("scan_joint_cost_weight",       0.1);
-  // A motion counts as an arm swing when the elbow travels more than this (m).
+  // m of elbow travel to count a motion as an arm swing.
   node->declare_parameter<double>     ("scan_swing_threshold_m",       0.25);
-  // true: stop after the sequence planning, print the forecast and do not move.
   node->declare_parameter<bool>       ("dry_run",                      false);
-  // true: save every executed motion to recording_file at the end of a
-  // complete scan (calibration run), for scan_replay_node.
   node->declare_parameter<bool>       ("record",                       false);
   node->declare_parameter<std::string>("recording_file",               "");
 
@@ -1186,7 +1081,6 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // --- Build the scan configuration struct ---
   ScanConfig cfg;
   cfg.center = Eigen::Vector3d(center_vec[0], center_vec[1], center_vec[2]);
   cfg.radius = radius;
@@ -1221,12 +1115,9 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // --- Generate waypoints ---
-  // In modalita' FULL li generiamo come due chiamate separate (upper + lower) e
-  // teniamo l'indice di confine: da li' in poi cambiano la pose di recovery e
-  // il check di occlusione. La transizione vera e propria la decide la DP.
-  // The visit order (classic or by sectors) is built after the MoveIt setup,
-  // because the sectors are oriented on the position of the robot base.
+  // Upper and lower generated separately: the recovery pose changes at the
+  // boundary. The visit order is built after the MoveIt setup (sectors are
+  // oriented on the robot base).
   std::vector<geometry_msgs::msg::Pose> upper_pts, lower_pts;
   if (cfg.hemisphere == HEMISPHERE_FULL) {
     ScanConfig cfg_upper = cfg; cfg_upper.hemisphere = HEMISPHERE_UPPER;
@@ -1239,19 +1130,15 @@ int main(int argc, char ** argv)
     lower_pts = generate_waypoints(cfg);
   }
 
-  // --- Background spinner (MoveGroupInterface needs the node spinning) ---
+  // MoveGroupInterface needs the node spinning.
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
   std::thread spinner([&executor]() { executor.spin(); });
 
-  // Un solo topic con un solo MarkerArray. I due marker per waypoint (sphere + arrow)
-  // sono distinguibili dal namespace e occupano posizioni consecutive nell'array.
   auto markers_pub = node->create_publisher<MarkerArray>("/scan_waypoints_markers", 10);
 
-  // Pre-compute the pitch sampling sequence (used only when lock_pitch=false).
   const std::vector<double> pitch_offsets = build_pitch_offsets_rad(pitch_range_deg, pitch_step_deg);
 
-  // --- MoveIt setup ---
   moveit::planning_interface::MoveGroupInterface move_group(node, planning_group);
   move_group.setEndEffectorLink(ee_link);
   move_group.setPoseReferenceFrame(global_frame);
@@ -1259,16 +1146,10 @@ int main(int argc, char ** argv)
   move_group.setMaxAccelerationScalingFactor(scaling);
   move_group.setPlanningTime(planning_time);
   move_group.setNumPlanningAttempts(planning_attempts);
-  // Workspace bounds AABB: size (1.5, 1.75, 1.5) m, center (0, 0.25, 0.5) in world.
-  // NB: è solo un hint per il sampling cartesiano di OMPL, non un vincolo geometrico
-  // sull'EE — con joint goal viene di fatto ignorato. Per vincolare davvero il TCP
-  // servono PositionConstraint o collision objects nella PlanningScene.
+  // Only a hint for OMPL sampling, not a TCP limit (walls are in the scene).
   move_group.setWorkspace(-0.75, -0.625, -0.25,   // min x,y,z
                           +0.75, +1.125, +1.25);  // max x,y,z
 
-  // Traduce la lista `scan_planners` del YAML in una catena ordinata di
-  // (pipeline, planner_id): ogni tratto la percorre e si ferma al primo planner
-  // che riesce. Vedi plan_with_fallback().
   PlannerSetup planners;
   for (const std::string & name : planner_names) {
     PlannerChoice choice;
@@ -1296,16 +1177,11 @@ int main(int argc, char ** argv)
     planner_label += planners.chain[k].label();
   }
 
-  // Copia locale della planning scene per il check collisioni dei candidati IK.
   planning_scene::PlanningScenePtr scene =
     fetch_planning_scene(node, move_group.getRobotModel(), logger);
 
-  // (lo spinner che processa anche i service /start e /pause e' gia' attivo, vedi sopra)
 
-  // --- Visit order ---
-  // Classic: upper hemisphere ring by ring, then the lower one. With
-  // `sectors` > 0 every hemisphere is visited sector by sector (see
-  // order_by_sectors).
+  // Visit order: ring by ring, or by sectors with `sectors` > 0.
   std::vector<geometry_msgs::msg::Pose> waypoints;
   std::vector<SectorBlock> blocks;
   if (num_sectors > 0) {
@@ -1319,11 +1195,9 @@ int main(int argc, char ** argv)
     waypoints.insert(waypoints.end(), upper_pts.begin(), upper_pts.end());
     waypoints.insert(waypoints.end(), lower_pts.begin(), lower_pts.end());
   }
-  // Upper points always come first, so the boundary is the number of upper points.
-  size_t lower_start_index = 0;  // 0 = nessuna transizione (upper-only o lower-only)
+  size_t lower_start_index = 0;  // 0 = no upper/lower boundary
   if (cfg.hemisphere == HEMISPHERE_FULL) lower_start_index = upper_pts.size();
 
-  // Build the table state (one row per waypoint, all PENDING)
   std::vector<WpRow> rows;
   rows.reserve(waypoints.size());
   for (const auto & p : waypoints) {
@@ -1332,7 +1206,6 @@ int main(int argc, char ** argv)
     rows.push_back(r);
   }
 
-  // --- Initial gray markers ---
   MarkerArray markers_array;
   markers_array.markers.reserve(2 * waypoints.size());
   for (size_t i = 0; i < waypoints.size(); ++i) {
@@ -1346,25 +1219,20 @@ int main(int argc, char ** argv)
 
   int successes      = 0;
   int failures       = 0;
-  int ik_failures    = 0;   // nessuna configurazione valida: waypoint irraggiungibile
-  int plan_failures  = 0;   // configurazione valida ma nessun planner ha trovato il percorso
-  int exec_failures  = 0;   // plan ok ma il controller ha rifiutato l'esecuzione
+  int ik_failures    = 0;   // no valid configuration
+  int plan_failures  = 0;   // no planner found a path
+  int exec_failures  = 0;   // the controller refused the plan
 
-  // Pose di recovery: home per l'emisfero superiore, lower_scan_ready per
-  // l'inferiore. In FULL viene aggiornata quando si passa sotto l'equatore.
+  // Recovery pose: home (upper), lower_scan_ready (lower).
   std::string recovery_pose_name =
     (cfg.hemisphere == HEMISPHERE_LOWER) ? lower_home_pose_name : home_pose_name;
 
-  // Filtro comune dei candidati IK:
-  //   1) collisione con la scena / auto-collisione (planning scene locale)
-  //   2) the arm hides part of the platform disk from the camera (both hemispheres)
-  // Ritorna true se il candidato e' accettabile.
+  // IK candidate filter: no collision, and the arm does not hide the platform.
   int collision_rejects = 0;
   int occlusion_rejects = 0;
-  int scene_occluded    = 0;   // waypoint scartati: oggetto della scena fra camera e centro
+  int scene_occluded    = 0;   // view blocked by a scene object
   const auto * jmg = move_group.getRobotModel()->getJointModelGroup(planning_group);
-  // Sight lines depend only on the camera position: they are rebuilt when the
-  // TCP moves (a new waypoint or a fallback point), not for every pitch.
+  // Sight lines depend only on the camera position: rebuilt when the TCP moves.
   planning_scene::PlanningScenePtr sight_scene = make_sight_scene(move_group.getRobotModel());
   Eigen::Vector3d sight_camera(1e9, 1e9, 1e9);
   auto platform_hidden = [&](const moveit::core::RobotState & st) -> bool {
@@ -1387,27 +1255,21 @@ int main(int argc, char ** argv)
     return true;
   };
 
-  // ==========================================================================
-  // FASE 1 - enumerazione offline. Per ogni waypoint si cercano TUTTE le
-  // configurazioni valide (pitch x rami IK) senza muovere il robot.
-  // ==========================================================================
+  // Phase 1: every valid configuration (pitch x IK branch) of every waypoint.
   moveit::core::RobotState work_state(*move_group.getCurrentState());
   std::vector<double> start_joints;
   work_state.copyJointGroupPositions(jmg, start_joints);
   const UrJointIndex ur_idx = find_ur_joint_indices(jmg);
 
-  // Con lock_pitch il pitch e' fisso: un solo offset (0).
   std::vector<double> enum_pitch_offsets = pitch_offsets;
   if (lock_pitch) enum_pitch_offsets = {0.0};
-  // Nel fallback bastano gli offset piu' piccoli (0, +-step, +-2step, +-3step).
+  // Fallback points: the smallest offsets only.
   std::vector<double> fb_pitch_offsets(
     enum_pitch_offsets.begin(),
     enum_pitch_offsets.begin() + std::min<size_t>(7, enum_pitch_offsets.size()));
 
-  // Enumera le configurazioni valide per una posa e le aggiunge a `out`.
-  // Per ogni pitch offset e per ogni seed chiama TRAC-IK (solve_type Speed:
-  // converge sul ramo piu' vicino al seed), poi filtra per collisioni /
-  // occlusione e scarta i duplicati.
+  // TRAC-IK (Speed: converges on the branch nearest the seed) for every pitch
+  // and seed, then filter and drop duplicates.
   auto enumerate_pose = [&](const geometry_msgs::msg::Pose & base_pose,
                             bool is_fallback,
                             const std::vector<std::vector<double>> & seeds,
@@ -1447,7 +1309,7 @@ int main(int argc, char ** argv)
 
   std::vector<std::vector<Candidate>> layers(waypoints.size());
   const std::vector<std::vector<double>> home_seeds = make_branch_seeds(start_joints, ur_idx);
-  std::vector<std::vector<double>> prev_seeds;   // soluzioni del waypoint precedente
+  std::vector<std::vector<double>> prev_seeds;   // previous waypoint's solutions
   size_t total_candidates = 0;
   auto enum_t0 = std::chrono::steady_clock::now();
 
@@ -1457,13 +1319,10 @@ int main(int argc, char ** argv)
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (g_quit.load() || !rclcpp::ok()) break;
 
-    // Seed: le soluzioni del waypoint precedente (vicino nello spazio e gia'
-    // una per ramo); quelle dalla home solo finche' non c'e' un precedente.
+    // Seeds: the previous waypoint's solutions (home's for the first).
     const std::vector<std::vector<double>> & seeds = prev_seeds.empty() ? home_seeds : prev_seeds;
 
-    // Linea di vista: se fra il waypoint e il centro c'e' un oggetto della
-    // scena la foto inquadrerebbe l'ostacolo. Scartato subito, senza IK ne'
-    // fallback.
+    // View blocked by a scene object: dropped, no IK, no fallback.
     if (scene) {
       Eigen::Vector3d wp_pos(waypoints[i].position.x, waypoints[i].position.y, waypoints[i].position.z);
       std::string hit_object;
@@ -1481,12 +1340,8 @@ int main(int argc, char ** argv)
 
     enumerate_pose(waypoints[i], false, seeds, enum_pitch_offsets, layers[i], enum_ik_timeout);
 
-    // Vicino al limite dell'inviluppo (braccio quasi disteso) il solver
-    // numerico puo' non trovare in 3 ms soluzioni che esistono: prima di
-    // dichiarare il punto irraggiungibile ritento con un timeout 20x.
-    // The retry also starts from the 8 branches of the start pose: the
-    // solutions of the previous waypoint may all lead to colliding branches
-    // (it happened with the sector order, on the far side near the reach limit).
+    // Near the reach limit the solver may need more than 3 ms: retry with a
+    // 20x timeout, also from the 8 branches of the start pose.
     const double slow_ik_timeout = enum_ik_timeout * 20.0;
     std::vector<std::vector<double>> retry_seeds = seeds;
     if (!prev_seeds.empty()) retry_seeds.insert(retry_seeds.end(), home_seeds.begin(), home_seeds.end());
@@ -1495,8 +1350,7 @@ int main(int argc, char ** argv)
     }
 
     if (layers[i].empty() && fallback_search) {
-      // Nessuna configurazione valida: cerco un punto vicino sulla sfera
-      // (2 anelli x 6 direzioni entro fallback_radius_mm), sempre offline.
+      // No valid configuration: try nearby points on the sphere.
       double fallback_angle_max = (fallback_radius_mm / 1000.0) / cfg.radius;
       Eigen::Vector3d wp_pos(waypoints[i].position.x, waypoints[i].position.y, waypoints[i].position.z);
       Eigen::Vector3d radial = (wp_pos - cfg.center).normalized();
@@ -1521,9 +1375,7 @@ int main(int argc, char ** argv)
     }
 
     if (layers[i].empty()) {
-      // Diagnosi: nessuna IK (fuori portata / orientamento) oppure tutte le IK
-      // in collisione o occluse? E con quali oggetti? Stessa ricerca
-      // dell'enumerazione (con il timeout lungo), qui si contano i motivi.
+      // Diagnosis: no IK at all, or all in collision / occluded (and by what).
       int ik_found = 0, colliding = 0, occluded = 0;
       std::map<std::string, int> contact_pairs;
       Eigen::Quaterniond q_base(waypoints[i].orientation.w, waypoints[i].orientation.x,
@@ -1586,10 +1438,7 @@ int main(int argc, char ** argv)
   const double enum_seconds =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - enum_t0).count();
 
-  // ==========================================================================
-  // FASE 2 - scelta della sequenza: DP a strati, un candidato per waypoint,
-  // minimizzando il percorso totale nei giunti (+ penalita' sul pitch).
-  // ==========================================================================
+  // Phase 2: layered DP, one candidate per waypoint.
   std::vector<std::vector<SeqCandidate>> dp_layers(waypoints.size());
   for (size_t i = 0; i < waypoints.size(); ++i) {
     for (const auto & c : layers[i]) {
@@ -1606,12 +1455,8 @@ int main(int argc, char ** argv)
     elbow_link = jmg->getActiveJointModels()[ur_idx.elbow]->getChildLinkModel()->getName();
   }
 
-  // Segment cost of the DP: what we want to keep small is how far the arm
-  // travels in space, so the cost is the elbow path plus the TCP path along
-  // the straight joint-space line (the path of Pilz PTP), computed with
-  // forward kinematics. The small joint term keeps big wrist spins from being
-  // free (they do not move the elbow, but they take time). Every segment is
-  // computed once and cached: the DP runs many times on the same segments.
+  // Segment cost: elbow + TCP path along the straight joint line, plus a small
+  // joint term (wrist spins take time). Cached: the DP runs many times.
   std::map<std::tuple<int, int, int, int>, double> edge_cost_cache;
   auto layer_joints = [&](int layer, int c) -> const std::vector<double> & {
     if (layer < 0) return start_joints;
@@ -1629,17 +1474,15 @@ int main(int argc, char ** argv)
     edge_cost_cache[key] = cost;
     return cost;
   };
-  // Validazione lazy dei tratti. Controllare tutti gli archi costerebbe minuti;
-  // si controllano solo quelli della catena scelta (retta in joint space, come
-  // Pilz PTP): i tratti che attraversano un ostacolo vengono penalizzati e la
-  // DP viene rifatta, finche' la catena e' pulita o si esauriscono le iterazioni.
+  // Lazy check: only the segments of the chosen chain are checked; blocked ones
+  // get a penalty and the DP runs again (checking every edge takes minutes).
   auto segment_is_free = [&](const std::vector<double> & a, const std::vector<double> & b) -> bool {
     if (!scene) return true;
     double max_diff = 0.0;
     for (size_t k = 0; k < a.size() && k < b.size(); ++k) {
       max_diff = std::max(max_diff, std::abs(a[k] - b[k]));
     }
-    int steps = std::max(1, static_cast<int>(std::ceil(max_diff / 0.05)));   // un campione ogni ~3 gradi
+    int steps = std::max(1, static_cast<int>(std::ceil(max_diff / 0.05)));
     moveit::core::RobotState from(work_state), to(work_state), mid(work_state);
     from.setJointGroupPositions(jmg, a);
     to.setJointGroupPositions(jmg, b);
@@ -1651,9 +1494,7 @@ int main(int argc, char ** argv)
     return true;
   };
 
-  // Cache dei tratti gia' controllati: true = libero, false = in collisione.
-  // Un tratto mai controllato e' considerato libero (ottimismo), poi viene
-  // verificato solo se la DP lo sceglie.
+  // Checked segments: true = free. Unchecked ones count as free.
   std::map<std::tuple<int, int, int, int>, bool> edge_cache;   // (prev_layer, prev_c, layer, c)
   auto edge_ok = [&](int prev_layer, int prev_c, int layer, int c) -> bool {
     auto it = edge_cache.find(std::make_tuple(prev_layer, prev_c, layer, c));
@@ -1686,12 +1527,8 @@ int main(int argc, char ** argv)
       const int c = seq.chosen[k];
       if (!check_edge(prev_layer, prev_c, static_cast<int>(k), c, *prev_joints, dp_layers[k][c].joints)) {
         ++new_blocked;
-        // Blocked segment: check right away EVERY pair of candidates between
-        // the previous layer and this one, so at the next iteration the DP
-        // already knows all the free ways between these two waypoints. Checking
-        // only the pairs from the chosen predecessor made the DP discover them
-        // one per iteration and hit the iteration limit with blocked segments
-        // left on the chain (they then went to OMPL).
+        // Blocked: check every pair between the two layers now, so the next
+        // DP knows all the free ways (one per iteration ran out of iterations).
         const size_t prev_count = (prev_layer < 0) ? 1 : dp_layers[prev_layer].size();
         for (size_t p2 = 0; p2 < prev_count; ++p2) {
           const std::vector<double> & a =
@@ -1710,9 +1547,7 @@ int main(int argc, char ** argv)
                 iter + 1, new_blocked, edge_cache.size());
     std::fflush(stdout);
     if (new_blocked == 0) break;
-    // Nessun tratto nuovo controllato: tutte le alternative dei layer bloccati
-    // sono gia' in cache e sono tutte in collisione. Un'altra iterazione
-    // darebbe la stessa catena; il tratto rimasto lo gestisce il planner.
+    // Nothing new checked: the remaining blocked segments go to the planner.
     if (edge_cache.size() == cache_before) {
       std::printf("  DP: %d tratti bloccati senza alternative libere, li lascio al planner.\n",
                   new_blocked);
@@ -1729,9 +1564,7 @@ int main(int argc, char ** argv)
   const std::vector<int> & chosen_wp = seq.chosen;   // chosen candidate per waypoint, -1 = none
   auto layer_name = [&](size_t k) { return "#" + std::to_string(k); };
 
-  // Forecast on the chosen chain, before moving: segments as straight lines in
-  // joint space (the path of Pilz PTP). Blocked segments will go to OMPL,
-  // whose path is not known in advance, so they are only counted.
+  // Forecast: straight joint lines; blocked segments (OMPL) only counted.
   int forecast_swings = 0;
   int forecast_blocked = 0;
   double forecast_elbow_m = 0.0;
@@ -1768,13 +1601,8 @@ int main(int argc, char ** argv)
     }
   }
 
-  // Arm envelope: the box that holds the origins of all the arm links (i) in
-  // every configuration the arm MUST be able to take (the chosen waypoint
-  // solutions, the start pose and the two recovery poses) and (ii) along the
-  // straight joint-space segments of the chain. Walls just outside box (i)
-  // cut none of the needed configurations but stop the arm from swinging out.
-  // Known limit: link origins only, the link bodies are covered by a fixed
-  // 0.10 m margin; use the collision meshes if the margin proves too tight.
+  // Arm envelope: box of the link origins in the needed configurations and
+  // along the chain; walls just outside it (+0.10 m) limit swings.
   const double wall_margin = 0.10;
   Eigen::AlignedBox3d needed_box, segments_box;
   auto extend_box = [&](const std::vector<double> & q, Eigen::AlignedBox3d & box) {
@@ -1834,7 +1662,7 @@ int main(int argc, char ** argv)
   size_t reachable = 0, via_fallback = 0;
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (chosen_wp[i] < 0) {
-      if (rows[i].status != WpStatus::OCCLUDED) {   // gia' marcato in fase 1
+      if (rows[i].status != WpStatus::OCCLUDED) {   // already marked in phase 1
         rows[i].status = WpStatus::UNREACHABLE;
         set_marker_color(markers_array, i, COLOR_RED);
       }
@@ -1875,8 +1703,6 @@ int main(int argc, char ** argv)
     g_sequence_summary = buf;
   }
 
-  // Dry run: print the forecast, then exit without moving.
-  // Used to compare configurations (sectors, cost, walls) in ~1 minute each.
   if (dry_run) {
     std::printf("\n%s\n", g_sequence_summary.c_str());
     for (const std::string & line : forecast_list) std::printf("%s\n", line.c_str());
@@ -1888,27 +1714,21 @@ int main(int argc, char ** argv)
     return 0;
   }
 
-  // --- Interactive terminal: spacebar pause/resume + Q to quit ---
   setup_raw_terminal();
   std::printf("%s", ansi::HIDE_CURSOR);
   std::thread key_thread(key_reader_loop);
 
-  // Primo render: tabella con la sequenza pianificata, in attesa di SPACE o
-  // del service /start. Da qui in poi il robot si muove.
+  // From here on the robot moves (after SPACE or /start).
   render_table(rows, lock_pitch, planner_label);
   wait_while_paused(rows, lock_pitch, planner_label);
 
-  // ==========================================================================
-  // FASE 3 - esecuzione della sequenza scelta.
-  // ==========================================================================
+  // Phase 3: execution.
   auto scan_start_time = std::chrono::steady_clock::now();
 
-  // True quando il robot e' fermo su un waypoint della sfera di scansione: solo
-  // da li' Pilz CIRC puo' pianificare l'arco (start e goal allo stesso raggio).
+  // CIRC needs a start on the sphere (same radius as the goal).
   bool on_sphere = false;
   bool scan_interrupted = false;   // stopped because even the recovery failed
 
-  // Every executed motion, with the elbow / TCP path, for the swing report.
   std::vector<SegmentLog> segment_logs;
 
   for (size_t i = 0; i < waypoints.size(); ++i) {
@@ -1916,12 +1736,12 @@ int main(int argc, char ** argv)
     wait_while_paused(rows, lock_pitch, planner_label);
     if (g_quit.load() || !rclcpp::ok()) break;
 
-    // Sotto l'equatore cambia la pose di recovery.
+    // Below the equator the recovery pose changes.
     if (lower_start_index > 0 && i == lower_start_index) {
       recovery_pose_name = lower_home_pose_name;
     }
 
-    if (chosen_wp[i] < 0) {   // gia' marcato OCCLUDED (fase 1) o UNREACHABLE (fase 2)
+    if (chosen_wp[i] < 0) {   // OCCLUDED (phase 1) or UNREACHABLE (phase 2)
       if (rows[i].status != WpStatus::OCCLUDED) {
         ++failures;
         ++ik_failures;
@@ -1944,8 +1764,7 @@ int main(int argc, char ** argv)
     std::string used_planner;
     bool plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger, &used_planner);
 
-    // No path found in time: OMPL is random, "not found in N s" is usually not
-    // "impossible". Try again with more time before going to the recovery pose.
+    // OMPL is random: retry with more time before the recovery pose.
     for (double retry_time : retry_planning_times) {
       if (plan_ok) break;
       RCLCPP_WARN(logger, "wp %zu: nessun percorso in %.0f s, riprovo con %s per %.0f s.",
@@ -1956,14 +1775,11 @@ int main(int argc, char ** argv)
     move_group.setPlanningTime(planning_time);
 
     if (!plan_ok) {
-      // Nessun percorso da dove siamo: passo dalla pose di recovery e riprovo
-      // una volta verso la STESSA configurazione.
+      // Through the recovery pose, then once more to the SAME configuration.
       rows[i].status = WpStatus::HOMING;
       render_table(rows, lock_pitch, planner_label);
       if (!recover_to_safe_pose(move_group, planners, recovery_pose_name, home_pose_name, logger)) {
-        // Neanche la recovery pianifica: quasi sempre stato di partenza
-        // invalido (robot in collisione / fuori limiti). Continuare farebbe
-        // solo fallire tutti i waypoint restanti: ci si ferma qui.
+        // Not even the recovery plans (start state invalid): stop the scan.
         RCLCPP_ERROR(logger,
           "wp %zu: recovery impossibile dallo stato attuale. SCAN INTERROTTO: "
           "riportare il robot in una posa valida e rilanciare.", i);
@@ -1973,7 +1789,7 @@ int main(int argc, char ** argv)
         scan_interrupted = true;
         break;
       }
-      on_sphere = false;   // dopo la recovery il TCP non e' piu' su un waypoint
+      on_sphere = false;   // after a recovery the TCP is off the sphere
       rows[i].status = WpStatus::RUNNING;
       render_table(rows, lock_pitch, planner_label);
       move_group.setJointValueTarget(work_state);
@@ -1992,14 +1808,14 @@ int main(int argc, char ** argv)
 
     moveit::core::MoveItErrorCode exec_code = move_group.execute(plan);
     if (exec_code != moveit::core::MoveItErrorCode::SUCCESS) {
-      // execute() fallito: robot fermo a meta' traiettoria -> home per sicurezza.
+      // execute() failed mid-trajectory: home for safety.
       RCLCPP_ERROR(logger,
         "wp %zu: execute() FALLITO con codice MoveIt = %d (%s). "
         "Verifica il terminale del bringup per il messaggio del controller.",
         i, static_cast<int>(exec_code.val), exec_code.message.c_str());
       ++failures;
       ++exec_failures;
-      on_sphere = false;   // fermo a meta' traiettoria: posizione non nota
+      on_sphere = false;   // stopped mid-trajectory
       rows[i].status = WpStatus::HOMING;
       set_marker_color(markers_array, i, COLOR_RED);
       publish_markers(markers_pub, markers_array);
@@ -2017,7 +1833,6 @@ int main(int argc, char ** argv)
       continue;
     }
 
-    // Raggiunto
     ++successes;
     on_sphere = true;
     {
@@ -2028,8 +1843,7 @@ int main(int argc, char ** argv)
                                   elbow_link, ee_link);
       segment_logs.push_back(seg);
 
-      // Recording: the motion plus the camera pose at its end, computed with
-      // the robot model (the replay recomputes it to detect a changed model).
+      // Camera pose at the end: the replay recomputes it to detect a changed model.
       RecordedSegment rec_seg = to_recorded("wp " + std::to_string(i), static_cast<int>(i), plan);
       if (!rec_seg.points.empty()) {
         moveit::core::RobotState end_state(work_state);
@@ -2056,23 +1870,19 @@ int main(int argc, char ** argv)
     render_table(rows, lock_pitch, planner_label);
   }
 
-  // Calcolo tempo totale di scansione (dal primo waypoint all'ultimo)
   auto scan_end_time = std::chrono::steady_clock::now();
   double scan_duration_s = std::chrono::duration<double>(scan_end_time - scan_start_time).count();
 
-  // Ritorno a home a fine scansione (se non killato)
   if (!g_quit.load() && rclcpp::ok()) {
     RCLCPP_WARN(logger, "=== Scan completato, ritorno a '%s' ===", home_pose_name.c_str());
     go_home(move_group, planners, home_pose_name, logger);
   }
 
-  // Conteggio dei fallback effettivamente trovati nel main loop
   int fallback_total = 0;
   for (const auto & r : rows) {
     if (r.status == WpStatus::FALLBACK_ORIGIN) ++fallback_total;
   }
 
-  // Final summary line, leaves table on screen
   std::printf("\n%sScan complete:%s %d / %zu reached, %d failed (%d IK, %d plan, %d execute).",
     ansi::BOLD, ansi::RESET, successes, waypoints.size(), failures,
     ik_failures, plan_failures, exec_failures);
@@ -2095,7 +1905,7 @@ int main(int argc, char ** argv)
   std::printf("\n%sTempo scansione:%s %.1f s (%.1f min)\n",
     ansi::BOLD, ansi::RESET, scan_duration_s, scan_duration_s / 60.0);
 
-  // Arm swings measured on the executed trajectories (recoveries excluded).
+  // Recoveries excluded.
   int swings = 0;
   double elbow_total = 0.0, tcp_total = 0.0;
   for (const SegmentLog & seg : segment_logs) {
@@ -2113,7 +1923,7 @@ int main(int argc, char ** argv)
   print_envelope();
   std::fflush(stdout);
 
-  // Calibration recording: only a complete scan is saved.
+  // Only a complete scan is saved.
   if (record) {
     if (scan_interrupted || g_quit.load() || !rclcpp::ok()) {
       std::printf("%sRegistrazione NON salvata:%s scan interrotto.\n", ansi::BOLD, ansi::RESET);
@@ -2153,7 +1963,6 @@ int main(int argc, char ** argv)
     std::fflush(stdout);
   }
 
-  // Cleanup
   g_quit = true;
   std::printf("%s", ansi::SHOW_CURSOR);
   std::fflush(stdout);

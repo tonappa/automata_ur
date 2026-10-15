@@ -1,3 +1,4 @@
+# One command: robot, MoveIt, scene, MQTT bridge, scan and HSI.
 import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -59,7 +60,6 @@ def launch_setup(context):
         PythonLaunchDescriptionSource(os.path.join(pkg_share_dir, 'launch', 'mqtt_bridge.launch.py'))
     ))
 
-    # The nodes started after the scene is ready.
     after_scene = []
     message = "[ur_automata_bringup] scene ready: starting"
 
@@ -71,8 +71,7 @@ def launch_setup(context):
             raise RuntimeError("mode must be execute or plan, not '" + mode + "'.")
         if plan_file == '':
             if mode == 'plan':
-                # mode:=plan writes plan_file: no default, so a working plan is
-                # never overwritten by mistake.
+                # No default in plan mode: a working plan is never overwritten by mistake.
                 raise RuntimeError("mode:=plan needs plan_file:=/home/ros/ur/recordings/<new name>.yaml "
                                    "(the plan is written there).")
             plan_file = DEFAULT_PLAN_FILE
@@ -100,10 +99,8 @@ def launch_setup(context):
         ))
         message += " the HSI node"
 
-    # The scan node checks the plan against the MoveIt scene as soon as it
-    # starts, and the HSI node reads the scene for its collision checks, so
-    # they must not start before the scene is complete. The scene node waits
-    # for move_group, adds the objects and exits: they start then.
+    # Scan and HSI read the MoveIt scene at startup: start them when the scene
+    # node exits, i.e. when move_group is up and the objects are in.
     def start_after_scene(event, context):
         if event.process_name.startswith('scene_publisher_node'):
             print(message)

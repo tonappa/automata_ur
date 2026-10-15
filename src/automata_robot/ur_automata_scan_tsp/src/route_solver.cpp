@@ -34,10 +34,8 @@ RouteResult solve_route(const std::vector<int64_t> & cost, int n, int start, int
   });
   routing.SetArcCostEvaluatorOfAllVehicles(transit);
 
-  // Generalized TSP: one node per cluster. The penalty for skipping a whole
-  // cluster is larger than any route, so a cluster is skipped only if it is
-  // impossible to visit. Nodes outside the clusters must not be visited at
-  // all: they get their own disjunction with zero penalty.
+  // Generalized TSP: skipping a cluster costs more than any route; nodes outside
+  // the clusters get a zero-penalty disjunction, so they are never visited.
   if (!clusters.empty()) {
     int64_t max_cost = 0;
     for (int64_t c : cost) max_cost = std::max(max_cost, c);

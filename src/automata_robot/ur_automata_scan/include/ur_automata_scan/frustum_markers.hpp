@@ -1,6 +1,8 @@
 #pragma once
 
-// Shared by scan_replay_node and scan_tsp_node (package ur_automata_scan_tsp).
+// RViz camera frustums on the waypoints of a recorded scan, on
+// /scan_waypoints_markers: gray = not reached yet, green = reached.
+// Shared by scan_replay_node and scan_tsp_node.
 
 #include <chrono>
 #include <string>
@@ -12,17 +14,7 @@
 
 #include "ur_automata_scan/scan_recording.hpp"
 
-// ============================================================================
-// RViz markers of a recorded scan being played back
-// ============================================================================
-// One small camera frustum (wireframe pyramid, like the camera of a 3D editor)
-// at every recorded waypoint pose: gray = not reached yet, green = reached.
-// The waypoints the calibration could not reach are not in the recording, so
-// they are not drawn. Topic: /scan_waypoints_markers, the one scan_sequence_node
-// uses, already shown by the RViz config.
-
-// Size of the drawn frustum (m). Only a drawing, not the real field of view of
-// the camera: change these to make it match the lens.
+// Size of the drawn frustum (m): a drawing, not the real field of view.
 const double FRUSTUM_DEPTH       = 0.05;   // along the optical axis (Y of the TCP)
 const double FRUSTUM_HALF_WIDTH  = 0.03;   // along X of the TCP
 const double FRUSTUM_HALF_HEIGHT = 0.02;   // along Z of the TCP
@@ -36,15 +28,13 @@ inline geometry_msgs::msg::Point make_point(double x, double y, double z)
   return p;
 }
 
-// One gray frustum per recorded waypoint. The marker id is the index of the
-// segment in the recording.
+// One gray frustum per recorded waypoint; marker id = segment index.
 inline visualization_msgs::msg::MarkerArray make_frustum_markers(
   const ScanRecording & rec, const std::string & frame)
 {
   using visualization_msgs::msg::Marker;
 
-  // Frustum in the camera frame: the apex is the camera, the rectangle is in
-  // front of it along +Y.
+  // Camera frame: apex at the camera, rectangle in front of it along +Y.
   const geometry_msgs::msg::Point apex = make_point(0.0, 0.0, 0.0);
   const geometry_msgs::msg::Point corners[4] = {
     make_point(+FRUSTUM_HALF_WIDTH, FRUSTUM_DEPTH, +FRUSTUM_HALF_HEIGHT),
@@ -87,8 +77,7 @@ inline visualization_msgs::msg::MarkerArray make_frustum_markers(
   return arr;
 }
 
-// Turns green the frustum of segment `segment_index` (nothing happens if that
-// segment is not a waypoint).
+// Turns green the frustum of segment `segment_index`.
 inline void set_frustum_reached(visualization_msgs::msg::MarkerArray & arr, size_t segment_index)
 {
   for (visualization_msgs::msg::Marker & m : arr.markers) {
@@ -101,9 +90,8 @@ inline void set_frustum_reached(visualization_msgs::msg::MarkerArray & arr, size
   }
 }
 
-// First publication: removes the markers left by a previous run, then shows
-// the frustums. Repeated a few times because RViz may not be connected to a
-// publisher that was just created.
+// Clears old markers and shows the frustums. Repeated: RViz may not be
+// connected yet to a publisher just created.
 inline void publish_first_frustums(
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub,
   const visualization_msgs::msg::MarkerArray & arr)

@@ -20,12 +20,10 @@ def generate_launch_description():
     s = cfg["scan"]
     h = cfg["scan3d"]
 
-    # Same IK setup as scan_sequence.launch.py: TRAC-IK in Speed mode for the
-    # enumeration (move_group keeps its own kinematics.yaml).
+    # TRAC-IK in Speed mode for the enumeration (move_group keeps its own).
     kinematics_yaml = _load_yaml("ur_automata_moveit_config", "config", "kinematics.yaml")
     kinematics_yaml[p["group"]]["solve_type"] = "Speed"
-    # Acceleration limits of joint_limits.yaml, loaded into the robot model of
-    # the node: they drive the PTP time estimate.
+    # Acceleration limits for the PTP time estimate.
     joint_limits_yaml = _load_yaml("ur_automata_moveit_config", "config", "joint_limits.yaml")
 
     retry_param = {}
@@ -33,8 +31,7 @@ def generate_launch_description():
     if retry_times:
         retry_param["scan_retry_planning_times"] = retry_times
 
-    # Same scan settings as scan_sequence_node (automata_config.yaml), so both
-    # nodes plan the same waypoints with the same constraints.
+    # Same scan settings as scan_sequence_node (automata_config.yaml).
     scan_node = Node(
         package="ur_automata_scan_tsp",
         executable="scan_tsp_node",
@@ -89,7 +86,7 @@ def generate_launch_description():
             "tsp_check_neighbours": ParameterValue(LaunchConfiguration("tsp_check_neighbours"), value_type=int),
             "start_tolerance_rad": ParameterValue(LaunchConfiguration("start_tolerance_rad"), value_type=float),
             "speed": ParameterValue(LaunchConfiguration("speed"), value_type=float),
-            # Photo handshake of mode:=execute (scan3d: in automata_config.yaml)
+            # mode:=execute: photo handshake, lights
             "start_topic":    h["start_topic"],
             "capture_topic":  h["capture_topic"],
             "status_topic":   h["status_topic"],
@@ -100,24 +97,21 @@ def generate_launch_description():
         ],
     )
 
-    # The MQTT bridge is not started here: one bridge serves the whole cell
-    # (ur_automata_bringup mqtt_bridge.launch.py, included by the one-command
-    # launcher).
+    # The MQTT bridge is ur_automata_bringup mqtt_bridge.launch.py (one for the cell).
 
     return LaunchDescription([
-        # plan: plan and save without moving | execute: load, check, execute
+        # plan: plan and save, robot still | execute: load, check, execute
         DeclareLaunchArgument("mode", default_value="plan"),
-        # alternate: sector order, then TSP and DP in turn | tsp: OR-Tools order, then DP
-        # gtsp: order and IK together | sectors: order of scan_sequence_node
+        # alternate | tsp | gtsp | sectors (see docs/scan.md)
         DeclareLaunchArgument("order", default_value="alternate"),
         DeclareLaunchArgument("plan_file", default_value="/home/ros/ur/recordings/scan_tsp.yaml"),
         DeclareLaunchArgument("tsp_time_limit", default_value="10.0"),
         DeclareLaunchArgument("refine_iterations", default_value="3"),
         DeclareLaunchArgument("blocked_penalty_s", default_value="10.0"),
-        # order:=tsp|gtsp: straight lines checked toward the N cheapest neighbours (0 = off)
+        # tsp/gtsp: straight lines checked toward the N cheapest neighbours (0 = off)
         DeclareLaunchArgument("tsp_check_neighbours", default_value="10"),
         DeclareLaunchArgument("start_tolerance_rad", default_value="0.01"),
-        # execute: speed relative to the plan, 1.0 = as planned, 0.5 = half speed (max 1.0)
+        # execute: fraction of the planned speed (max 1.0)
         DeclareLaunchArgument("speed", default_value="1.0"),
         scan_node,
     ])

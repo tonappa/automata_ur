@@ -10,7 +10,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _load_config():
-    """Reads automata_config.yaml from the installed share of ur_automata_bringup."""
+    """automata_config.yaml from the installed share of ur_automata_bringup."""
     cfg_path = os.path.join(
         get_package_share_directory("ur_automata_bringup"),
         "config",
@@ -37,7 +37,6 @@ def generate_launch_description():
     p = cfg["planning"]
     s = cfg["scan"]
 
-    # Plays back the scan recorded with scan_sequence.launch.py record:=true.
     # Starts paused: ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
     replay_node = Node(
         package="ur_automata_scan",
@@ -61,7 +60,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # Speed relative to the recording: 1.0 = as recorded, 0.5 = half speed (max 1.0)
+        # 1.0 = as recorded, 0.5 = half speed (max 1.0)
         DeclareLaunchArgument("speed", default_value="1.0"),
         replay_node,
     ])
