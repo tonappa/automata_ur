@@ -48,6 +48,16 @@
 | `Cannot find planning configuration ... kConfigDefault` | the OMPL algorithm is missing from `planner_configs` in `ompl_planning.yaml` |
 | Only a generic FAILURE is reported | the real cause is in the move_group log: `ls -t ~/.ros/log/move_group_*.log \| head -1` in the container |
 
+## HSI measurement
+
+| Symptom | Cause / fix |
+|---|---|
+| `Il robot non e' in 'home' ... misura rifiutata` and `hsi object_1 ERROR` | intended: the HSI starts only from `home` (within 0.02 rad). Wait for the `done` of the scan, or bring the robot home |
+| `Nessuna configurazione senza collisioni a 0.30 m sopra il centro` | no collision-free arm pose above the object: check the scene, `hsi.distance`, and the ceiling `scan.walls.top_z` (a planning limit, not a real obstacle) |
+| The robot stays above the object | no `measure_complete` with the same object on `hsi/status`: the HSI app is not answering (for now answer by hand, see [mqtt.md](mqtt.md)) or `hsi.wait_for_hsi: false` for tests |
+| `Start HSI ... ignorato: misura in corso` | a measurement is already running: wait for its `done` |
+| The HSI node does not start | it starts with the scan, after the scene: needs `use_moveit`, `use_scene` and `use_hsi` true |
+
 ## Display
 
 | Symptom | Cause / fix |

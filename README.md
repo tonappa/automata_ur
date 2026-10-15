@@ -103,6 +103,7 @@ sequenceDiagram
 | **PC** | Ubuntu 24.04 (any Linux with Docker should work), Ethernet link to the robot |
 | **Software on the host** | Docker Engine + `docker compose`, `nvidia-container-toolkit` (optional, see below), X11 for RViz, Mosquitto, Python 3 |
 | **Camera** | [mqtt_client_tutorial](https://github.com/GDqbrobotics/mqtt_client_tutorial) VimbaX app: a simulated camera (`--device sim`) or a real Allied Vision camera |
+| **HSI** | hyperspectral sensor app (in development): for now its answer is sent by hand with `mosquitto_pub`; message contract in [docs/mqtt.md](docs/mqtt.md) |
 
 Everything ROS (ROS 2 Jazzy, MoveIt 2, UR driver, OR-Tools, MQTT bridge) is
 inside the Docker image: nothing ROS is installed on the host.

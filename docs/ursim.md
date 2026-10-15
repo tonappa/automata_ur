@@ -71,6 +71,10 @@ ros2 launch ur_automata_bringup ur_automata_bringup.launch.py plan_file:=/home/r
 Press **Play** in PolyScope, then start a scan as in the README
 (`mosquitto_pub -t 'automata/scan3d/start' -q 1 -m 'object_1'`).
 
+The HSI measurement works in URSim as well and needs no plan: after the scan
+`done`, `mosquitto_pub -t 'automata/hsi/start' -q 1 -m 'object_1'` and answer
+by hand on `hsi/status` (see [mqtt.md](mqtt.md)).
+
 Quick check without scanning: `use_scan:=false`, then in RViz drag the
 interactive marker, *Plan*, *Execute*: the arm moves in PolyScope too.
 
