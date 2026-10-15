@@ -193,9 +193,12 @@ sudo usermod -aG audio,video $USER   # then log out and back in
 
 ## 2. Cloning the repo
 
-The upstream UR packages are git submodules, kept for reference and for
-possible patches (the Docker image installs the `ros-jazzy-ur` `.deb` packages
-anyway):
+The UR driver (`src/utils/Universal_Robots_ROS2_Driver`) is a git submodule
+pinned to a commit of the upstream `jazzy` branch. It is built in the workspace
+and takes the place of the `ros-jazzy-ur` `.deb` packages of the Docker image:
+the driver version is the same on every PC, whenever the image is built, and
+`ur_calibration` has the fix that the 3.9.0 `.deb` lacks (see section on the
+calibration). `ur_description` comes from the `.deb` packages.
 
 ```bash
 git clone <repo-url> ur
@@ -879,7 +882,8 @@ src/automata_robot/
   ur_automata_scan_tsp/        experimental scan planner: visit order with OR-Tools, plan saved
                                and executed later; uses the libraries of ur_automata_scan
 
-src/utils/                     upstream UR submodules (driver and description), jazzy branch — read-only
+src/utils/                     UR driver submodule (upstream jazzy, pinned commit) — read-only;
+                               ur_io_ros2_manager (digital I/O on topics)
 ```
 
 The end effector is the `ee_automata_V2.stl` mesh attached to `tool0`; the TCP
