@@ -238,7 +238,8 @@ scan:
 # Photo handshake of scan_tsp_node mode:=execute (std_msgs/String topics).
 # acquire and status go to/from the VimbaX camera app over MQTT through the
 # mqtt_client bridge (config/mqtt_bridge.yaml); start and done are for the
-# orchestrator (for now by hand with ros2 topic pub / echo). Waypoints are
+# orchestrator, also over MQTT (automata/scan3d/start, automata/scan3d/done).
+# If you change a topic name here, change it in mqtt_bridge.yaml too. Waypoints are
 # numbered 1..N from the north pole to the south pole, ring by ring
 # (counterclockwise from +X of global_frame), counting only the waypoints of
 # the plan. Camera pose = end_effector_link in global_frame, meters.

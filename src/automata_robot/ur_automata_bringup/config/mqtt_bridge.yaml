@@ -1,7 +1,12 @@
 # ROS <-> MQTT bridge (ika-rwth-aachen/mqtt_client) for the photo handshake of
 # scan_tsp_node mode:=execute. Started by scan_tsp.launch.py with mode:=execute.
 # The ROS topics are the scan3d: section of automata_config.yaml; the MQTT
-# topics are the ones of the VimbaX camera app (mqtt_client_tutorial).
+# topics are the ones of the VimbaX camera app (mqtt_client_tutorial) and of the
+# orchestrator (automata/scan3d/start in, automata/scan3d/done out). Start and done
+# are two separate MQTT topics: with only one, the bridge would get back its own
+# "done" message and forward it to /scan3d/start as a new scan.
+# The object name must not be only a number or true/false: the bridge would turn
+# it into Int32/Bool and the node (std_msgs/String) would not receive it.
 # primitive: true -> the std_msgs/String text goes to MQTT as it is, and back.
 # After a change: rebuild ur_automata_bringup.
 /**/*:
@@ -13,8 +18,16 @@
       ros2mqtt:
         ros_topics:
           - /scan3d/acquire
+          - /scan3d/done
         /scan3d/acquire:
           mqtt_topic: vimbax/commands
+          primitive: true
+          ros_type: std_msgs/msg/String
+          advanced:
+            mqtt:
+              qos: 1
+        /scan3d/done:
+          mqtt_topic: automata/scan3d/done
           primitive: true
           ros_type: std_msgs/msg/String
           advanced:
@@ -23,8 +36,15 @@
       mqtt2ros:
         mqtt_topics:
           - vimbax/status
+          - automata/scan3d/start
         vimbax/status:
           ros_topic: /scan3d/status
+          primitive: true
+          advanced:
+            mqtt:
+              qos: 1
+        automata/scan3d/start:
+          ros_topic: /scan3d/start
           primitive: true
           advanced:
             mqtt:
