@@ -2,10 +2,16 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
+                            RegisterEventHandler)
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
+
+# Plan executed when plan_file is not given (mode:=execute only).
+DEFAULT_PLAN_FILE = "/home/ros/ur/recordings/scan_tsp_real.yaml"
+
 
 def _load_config():
     cfg_path = os.path.join(
@@ -15,6 +21,76 @@ def _load_config():
     )
     with open(cfg_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def launch_setup(context):
+    pkg_share_dir = get_package_share_directory('ur_automata_bringup')
+
+    ur_automata_control_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_share_dir, 'launch', 'ur_automata_control.launch.py')
+        )
+    )
+
+    ur_automata_moveit_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_share_dir, 'launch', 'ur_automata_moveit.launch.py')
+        ),
+        launch_arguments={
+            'use_rviz':  LaunchConfiguration('use_rviz'),
+            'use_scene': LaunchConfiguration('use_scene'),
+        }.items(),
+        condition=IfCondition(LaunchConfiguration('use_moveit'))
+    )
+
+    actions = [ur_automata_control_launch, ur_automata_moveit_launch]
+
+    if LaunchConfiguration('use_scan').perform(context) != 'true':
+        return actions
+
+    # --- Scan (scan_tsp_node + MQTT bridge in execute) ---
+    mode = LaunchConfiguration('mode').perform(context)
+    plan_file = LaunchConfiguration('plan_file').perform(context)
+    if mode not in ('execute', 'plan'):
+        raise RuntimeError("mode must be execute or plan, not '" + mode + "'.")
+    if plan_file == '':
+        if mode == 'plan':
+            # mode:=plan writes plan_file: no default, so a working plan is
+            # never overwritten by mistake.
+            raise RuntimeError("mode:=plan needs plan_file:=/home/ros/ur/recordings/<new name>.yaml "
+                               "(the plan is written there).")
+        plan_file = DEFAULT_PLAN_FILE
+    if (LaunchConfiguration('use_moveit').perform(context) != 'true' or
+            LaunchConfiguration('use_scene').perform(context) != 'true'):
+        raise RuntimeError("use_scan:=true needs use_moveit:=true and use_scene:=true "
+                           "(or use_scan:=false).")
+
+    scan_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('ur_automata_scan_tsp'),
+                         'launch', 'scan_tsp.launch.py')
+        ),
+        launch_arguments={
+            'mode':      mode,
+            'plan_file': plan_file,
+            'order':     LaunchConfiguration('order'),
+            'speed':     LaunchConfiguration('speed'),
+        }.items(),
+    )
+
+    # The scan node checks the plan against the MoveIt scene as soon as it
+    # starts, so it must not start before the scene is complete. The scene node
+    # waits for move_group, adds the objects and exits: the scan starts then.
+    def start_scan_after_scene(event, context):
+        if event.process_name.startswith('scene_publisher_node'):
+            print("[ur_automata_bringup] scene ready: starting the scan (mode " + mode +
+                  ", plan " + plan_file + ")")
+            return [scan_launch]
+        return None
+
+    actions.append(RegisterEventHandler(OnProcessExit(on_exit=start_scan_after_scene)))
+    return actions
+
 
 def generate_launch_description():
     cfg = _load_config()
@@ -43,29 +119,35 @@ def generate_launch_description():
             'use_scene',
             default_value=use_scene_str_condition,
             description='Spawn the planning-scene objects if true. Default is read from automata_config.yaml.'
-        )
+        ),
+        DeclareLaunchArgument(
+            'use_scan',
+            default_value='true',
+            description='Start scan_tsp_node after the scene is ready (needs use_moveit and use_scene). '
+                        'false: robot bring-up and MoveIt only.'
+        ),
+        DeclareLaunchArgument(
+            'mode',
+            default_value='execute',
+            description='execute: load plan_file and wait for the object on /scan3d/start (MQTT bridge on) | '
+                        'plan: plan without moving the robot and write plan_file, then the scan node exits.'
+        ),
+        DeclareLaunchArgument(
+            'plan_file',
+            default_value='',
+            description='Plan to execute (default ' + DEFAULT_PLAN_FILE + ') or to write '
+                        '(required with mode:=plan).'
+        ),
+        DeclareLaunchArgument(
+            'order',
+            default_value='alternate',
+            description='mode:=plan only: alternate | tsp | gtsp | sectors.'
+        ),
+        DeclareLaunchArgument(
+            'speed',
+            default_value='0.3',
+            description='mode:=execute only: speed relative to the plan (1.0 = as planned, max 1.0).'
+        ),
     ]
 
-    pkg_share_dir = get_package_share_directory('ur_automata_bringup')
-
-    ur_automata_control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_share_dir, 'launch', 'ur_automata_control.launch.py')
-        )
-    )
-
-    ur_automata_moveit_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_share_dir, 'launch', 'ur_automata_moveit.launch.py')
-        ),
-        launch_arguments={
-            'use_rviz':  LaunchConfiguration('use_rviz'),
-            'use_scene': LaunchConfiguration('use_scene'),
-        }.items(),
-        condition=IfCondition(LaunchConfiguration('use_moveit'))
-    )
-
-    return LaunchDescription(declared_arguments + [
-        ur_automata_control_launch,
-        ur_automata_moveit_launch
-    ])
+    return LaunchDescription(declared_arguments + [OpaqueFunction(function=launch_setup)])
