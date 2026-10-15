@@ -61,6 +61,7 @@
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 #include <nlohmann/json.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -344,6 +345,9 @@ int main(int argc, char ** argv)
   node->declare_parameter<std::string>("status_topic",         "/scan3d/status");
   node->declare_parameter<std::string>("done_topic",           "/scan3d/done");
   node->declare_parameter<bool>       ("wait_for_next",        true);
+  // execute: std_msgs/Bool topic of the scan lights (a robot digital output
+  // through ur_io_ros2_manager), on for the whole scan. "" = no lights.
+  node->declare_parameter<std::string>("light_topic",          "/scan3d/light");
 
   const std::string global_frame    = node->get_parameter("global_frame").as_string();
   const std::string planning_group  = node->get_parameter("planning_group").as_string();
@@ -376,6 +380,7 @@ int main(int argc, char ** argv)
   const std::string status_topic    = node->get_parameter("status_topic").as_string();
   const std::string done_topic      = node->get_parameter("done_topic").as_string();
   const bool        wait_for_next   = node->get_parameter("wait_for_next").as_bool();
+  const std::string light_topic     = node->get_parameter("light_topic").as_string();
 
   auto fail = [&](const std::string & message) {
     std::fprintf(stderr, "%s\n", message.c_str());
@@ -692,9 +697,38 @@ int main(int argc, char ** argv)
       });
     auto status_sub = node->create_subscription<std_msgs::msg::String>(status_topic, 10, on_camera_status);
 
-    std::printf("Topic: start %s | capture %s | status %s | done %s | wait_for_next %s\n",
+    // Scan lights: true at the start of a scan, false at the end.
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr light_pub;
+    if (!light_topic.empty()) {
+      light_pub = node->create_publisher<std_msgs::msg::Bool>(light_topic, 10);
+    }
+    auto set_lights = [&](bool on) {
+      if (!light_pub) return;
+      if (light_pub->get_subscription_count() == 0) {
+        std::fprintf(stderr, "Nessuno ascolta su %s (ur_io_ros2_manager avviato?): luci non comandate.\n",
+                     light_topic.c_str());
+        return;
+      }
+      std_msgs::msg::Bool msg;
+      msg.data = on;
+      light_pub->publish(msg);
+      std::printf("Luci %s (%s)\n", on ? "accese" : "spente", light_topic.c_str());
+      std::fflush(stdout);
+    };
+    // Lights off at startup: a scan stopped with Ctrl+C leaves them on. Wait
+    // up to 5 s for the subscriber, or this first message is lost.
+    if (light_pub) {
+      const auto wait_t0 = std::chrono::steady_clock::now();
+      while (rclcpp::ok() && light_pub->get_subscription_count() == 0 && seconds_since(wait_t0) < 5.0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      set_lights(false);
+    }
+
+    std::printf("Topic: start %s | capture %s | status %s | done %s | light %s | wait_for_next %s\n",
                 start_topic.c_str(), capture_topic.c_str(), status_topic.c_str(),
-                done_topic.c_str(), wait_for_next ? "true" : "false");
+                done_topic.c_str(), light_topic.empty() ? "(none)" : light_topic.c_str(),
+                wait_for_next ? "true" : "false");
 
     // Gray camera frustums on the waypoints of the plan.
     visualization_msgs::msg::MarkerArray markers = make_frustum_markers(rec, global_frame);
@@ -719,6 +753,7 @@ int main(int argc, char ** argv)
       g_scan_running = true;
       std::printf("\n=== Scansione di '%s' ===\n", object_name.c_str());
       std::fflush(stdout);
+      set_lights(true);
 
       // Every frustum gray again.
       markers = make_frustum_markers(rec, global_frame);
@@ -841,6 +876,8 @@ int main(int argc, char ** argv)
         std::fflush(stdout);
       }
 
+      // Back in home (or stopped): lights off, then done to the orchestrator.
+      set_lights(false);
       std_msgs::msg::String done_msg;
       done_msg.data = "scan3D " + object_name;
       if (!completed) done_msg.data += " ERROR";

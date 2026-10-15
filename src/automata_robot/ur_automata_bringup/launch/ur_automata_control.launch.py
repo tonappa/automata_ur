@@ -121,7 +121,7 @@ def generate_launch_description():
                 "controllers_file": controllers_file,
             }.items(),
         ),
-        # Digital I/O <-> topics, mapping in the digital_io section of automata_config.yaml
+        # Digital I/O <-> topics, mapping in ur_io_ros2_manager/config/config.yaml
         Node(
             package="ur_io_ros2_manager",
             executable="ur_io_ros2_manager_node",

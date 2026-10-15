@@ -96,6 +96,7 @@ def generate_launch_description():
             "status_topic":   h["status_topic"],
             "done_topic":     h["done_topic"],
             "wait_for_next":  h["wait_for_next"],
+            "light_topic":    h["light_topic"],
             },
         ],
     )

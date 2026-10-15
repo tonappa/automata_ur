@@ -8,6 +8,6 @@ digital_io:
     io_type: input
 
   # Digital outputs subscribe to std_msgs/Bool and call the UR SetIO service.
-  - topic_name: /led_ring
+  - topic_name: /scan3d/light      # scan lights, driven by scan_tsp_node (scan3d.light_topic)
     io_index: 0
     io_type: output

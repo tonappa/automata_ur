@@ -19,13 +19,13 @@
 ## What it does
 
 1. An **orchestrator** asks for a scan of an object (`object_1`, `object_2`, …).
-2. The robot follows a **pre-computed plan** that visits the waypoints of a
+2. The robot switches the **scan lights** on and follows a **pre-computed plan** that visits the waypoints of a
    sphere (radius 0.25 m) around the object, with the camera always pointing at
    its center.
 3. On every waypoint the robot **stops, asks the camera for a photo** and sends
    it the exact camera pose; it moves on when the camera says the photo is done.
-4. At the end the robot goes back to `home` and tells the orchestrator the
-   scan is **done**.
+4. At the end the robot goes back to `home`, switches the lights off and tells
+   the orchestrator the scan is **done**.
 
 Highlights:
 
@@ -75,14 +75,14 @@ sequenceDiagram
     participant R as Robot (scan_tsp_node)
     participant C as Camera app
     O->>R: automata/scan3d/start  "object_1"
-    Note over R: goes to the start pose of the plan (if needed)
+    Note over R: lights on (digital output DO0), goes to the start pose of the plan
     loop every waypoint of the plan
         Note over R: moves to the waypoint
         R->>C: vimbax/commands  acquire object_1, camera pose, waypoint n
         Note over C: takes the photo, saves object_1_wp_n.jpg
         C-->>R: vimbax/status  measure_complete (object_1, waypoint n)
     end
-    Note over R: back to home
+    Note over R: back to home, lights off
     R->>O: automata/scan3d/done  "scan3D object_1"
 ```
 
@@ -216,8 +216,10 @@ is read by every launch file:
 | `robot:` | controller IP, UR model, calibration file, base pose |
 | `planning:` | MoveIt group, TCP link, home poses, speed of the planning, RViz/scene on or off |
 | `scan:` | sphere center and radius, waypoint grid, IK and planner settings, platform mesh, keep-outs, walls |
-| `scan3d:` | ROS topics of the photo handshake, `wait_for_next` |
-| `digital_io:` | robot digital pins mapped to ROS topics |
+| `scan3d:` | ROS topics of the photo handshake and of the scan lights, `wait_for_next` |
+
+Robot digital I/O (e.g. the scan lights on DO0) is mapped to ROS topics in
+[`ur_io_ros2_manager/config/config.yaml`](src/utils/ur_io_ros2_manager/config/config.yaml).
 
 > The launch files read the **installed** copy: after editing the file run
 > `colcon build --packages-select ur_automata_bringup` and `source install/setup.bash`.

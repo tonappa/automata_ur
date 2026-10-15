@@ -37,6 +37,7 @@
 |---|---|
 | `Piano NON riutilizzabile` and the scan node exits | the cell changed since the plan was made (it lists what): fix it or plan again with `mode:=plan` |
 | The scan stays on a waypoint | no `measure_complete` from the camera: is the camera app running and `ready`? Is Mosquitto up? Watch with `mosquitto_sub -t 'vimbax/#' -v` |
+| `Nessuno ascolta su /scan3d/light` and the lights stay off | `ur_io_ros2_manager` is not running, or the topic names in `scan3d.light_topic` and in its `config.yaml` differ |
 | A start message does nothing | a scan is already running (start ignored), or the name is only a number / `true` (the bridge turns it into another type) |
 | A scan starts by itself when the launch starts | the orchestrator sent `start` with the retain flag: clear it with `mosquitto_pub -t 'automata/scan3d/start' -r -n` |
 | `mode:=plan needs plan_file:=...` | intended: give a new file name so the working plan is not overwritten |

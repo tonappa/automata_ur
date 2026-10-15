@@ -35,8 +35,7 @@ scan3d:                                  # ROS topics of the photo handshake: se
   start_topic: /scan3d/start
   ...
   wait_for_next: true                    # false = do not wait for the camera
-
-digital_io: []                           # robot pins <-> std_msgs/Bool topics
+  light_topic: /scan3d/light             # scan lights (std_msgs/Bool); "" = no lights
 ```
 
 Notes:
@@ -48,10 +47,32 @@ Notes:
 - A non-zero `base_xyz` / `base_rpy` also adds a mounting wall behind the base
   in the scene. Example of a wall mount: `base_xyz: [0.133, -0.25, 0.455]`,
   `base_rpy: [-1.5708, 0, 0]`.
-- `digital_io` example: `- {topic_name: /led_ring, io_index: 0, io_type: output}`
-  (inputs are published when the pin changes, outputs are set by publishing).
 - The YAML comments keep the history of the positions and settings that were
   tried, with their results.
+
+## Digital I/O and scan lights
+
+`ur_io_ros2_manager` (started with the robot) maps robot digital pins to
+`std_msgs/Bool` topics, as listed in
+[`src/utils/ur_io_ros2_manager/config/config.yaml`](../src/utils/ur_io_ros2_manager/config/config.yaml):
+inputs are published when the pin changes, outputs are set by publishing on
+their topic.
+
+```yaml
+digital_io:
+  - topic_name: /scan3d/light   # scan lights
+    io_index: 0                 # standard digital output DO0
+    io_type: output
+```
+
+`scan_tsp_node` publishes `true` on `scan3d.light_topic` when a start message
+arrives (before the robot moves) and `false` when the robot is back in `home`,
+right before `done`, also when the scan ends with `ERROR`. When the node starts
+it switches the lights off, in case a previous scan was stopped with Ctrl+C.
+Switch them by hand with
+`ros2 topic pub --once /scan3d/light std_msgs/msg/Bool "{data: true}"`.
+The topic name must be the same in both files. After a change in `config.yaml`
+rebuild `ur_io_ros2_manager` and restart the bring-up.
 
 ## The camera TCP
 
@@ -68,6 +89,7 @@ Launch files read the **installed** copies, not `src/`.
 | you changed | then |
 |---|---|
 | `automata_config.yaml`, `mqtt_bridge.yaml`, calibration file | `colcon build --packages-select ur_automata_bringup`, restart the launch |
+| digital I/O mapping (`ur_io_ros2_manager/config/config.yaml`) | `ur_io_ros2_manager`, restart the bring-up |
 | URDF / xacro, end-effector mesh | `ur_automata_description` |
 | SRDF, MoveIt configs | `ur_automata_moveit_config` |
 | scene code or meshes | `ur_automata_scene` |
@@ -97,7 +119,7 @@ colcon test --packages-select ur_automata_scan ur_automata_scan_tsp && colcon te
 | launch file | starts |
 |---|---|
 | `ur_automata_bringup ur_automata_bringup.launch.py` | **everything**: robot, MoveIt, scene, RViz and the scan |
-| `ur_automata_bringup ur_automata_control.launch.py` | robot only: UR driver, controllers, digital I/O |
+| `ur_automata_bringup ur_automata_control.launch.py` | robot only: UR driver, controllers, digital I/O (`ur_io_ros2_manager`) |
 | `ur_automata_bringup ur_automata_moveit.launch.py` | MoveIt (`move_group`), RViz, collision scene |
 | `ur_automata_scan_tsp scan_tsp.launch.py` | scan node (+ MQTT bridge in execute), when the rest already runs |
 | `ur_automata_moveit_config setup_assistant.launch.py` | MoveIt Setup Assistant, to edit the MoveIt configuration |

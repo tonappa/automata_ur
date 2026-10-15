@@ -247,11 +247,11 @@ scan3d:
                                      #      "measure_complete" with this object and waypoint -> next waypoint
   done_topic:     /scan3d/done       # out: "scan3D object_3" (or "scan3D object_3 ERROR") at the end of the scan
   wait_for_next:  true               # false: do not wait for the camera (tests without the camera)
+  light_topic:    /scan3d/light      # out: std_msgs/Bool, true from the start message until the return home
+                                     #      (then done); "" = no lights. Robot digital output DO0 through
+                                     #      ur_io_ros2_manager: the same name must be in its config.yaml
 
-# Robot digital I/O <-> std_msgs/Bool topics (ur_io_ros2_manager, started by
-# ur_automata_control.launch.py). input: published when the pin changes;
-# output: a message on the topic sets the pin (SetIO service). After a change:
-# rebuild ur_automata_bringup + restart the bring-up. Example:
-#   - {topic_name: /task_pause, io_index: 1, io_type: input}
-#   - {topic_name: /led_ring,   io_index: 0, io_type: output}
-digital_io: []
+# Robot digital I/O <-> std_msgs/Bool topics: not here, in
+# src/utils/ur_io_ros2_manager/config/config.yaml (read by ur_io_ros2_manager,
+# started by ur_automata_control.launch.py). After a change there: rebuild
+# ur_io_ros2_manager + restart the bring-up.
