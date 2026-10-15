@@ -250,7 +250,7 @@ Details: [docs/configuration.md](docs/configuration.md).
 ## Repository layout
 
 ```
-ur/
+automata_ur/
 ├── docker/ · docker-compose.yaml · run.sh    Docker image and container
 ├── start_ursim_seccomp.sh                     URSim simulator (host)
 ├── recordings/                                saved scan plans (scan_tsp_real.yaml = real robot)
