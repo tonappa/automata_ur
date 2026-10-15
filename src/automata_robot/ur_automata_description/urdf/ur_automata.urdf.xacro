@@ -73,6 +73,7 @@
     name="$(arg name)"
     tf_prefix="$(arg tf_prefix)"
     kinematics_parameters_file="$(arg kinematics_params)"
+    ur_type="$(arg ur_type)"
     transmission_hw_interface="$(arg transmission_hw_interface)"
     use_mock_hardware="$(arg use_mock_hardware)"
     mock_sensor_commands="$(arg mock_sensor_commands)"

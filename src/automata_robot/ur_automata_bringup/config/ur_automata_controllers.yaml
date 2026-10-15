@@ -48,6 +48,13 @@ controller_manager:
     tool_contact_controller:
       type: ur_controllers/ToolContactController
 
+    # Spawned by ur_control.launch.py of the driver since upstream f6997bd
+    gravity_update_controller:
+      type: ur_controllers/GravityUpdateController
+
+    twist_controller:
+      type: ur_controllers/TwistController
+
     enforce_command_limits: false
 
 speed_scaling_state_broadcaster:
@@ -198,5 +205,13 @@ tcp_pose_broadcaster:
       child_frame_id: $(var tf_prefix)tool0_controller
 
 tool_contact_controller:
+  ros__parameters:
+    tf_prefix: "$(var tf_prefix)"
+
+twist_controller:
+  ros__parameters:
+    tf_prefix: "$(var tf_prefix)"
+
+gravity_update_controller:
   ros__parameters:
     tf_prefix: "$(var tf_prefix)"
