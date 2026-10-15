@@ -23,8 +23,8 @@ echo "------------------------------------------------"
 ROS_DISTRO="jazzy"
 ROS_VERSION="2"
 
-# --- Docker parameters (automatic from current directory) ---
-export WORKSPACE_NAME=$(basename "$PWD")
+# --- Docker parameters ---
+export WORKSPACE_NAME=ur   # fixed, whatever the clone folder: config and launch files use /home/ros/ur
 IMAGE_NAME="${WORKSPACE_NAME}_ws"
 CONTAINER_NAME="${WORKSPACE_NAME}_container"
 

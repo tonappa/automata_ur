@@ -10,7 +10,7 @@ safest way to try the whole cell.
 ## 1. Start URSim (host, not in the ROS container)
 
 ```bash
-cd ~/ur
+cd ~/automata_ur      # the repo folder
 ./start_ursim_seccomp.sh
 ```
 

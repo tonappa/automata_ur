@@ -176,7 +176,7 @@ the plans are computed on a different robot than the real one.
 
 ## Docker
 
-`run.sh` wraps `docker compose` and derives the names from the folder:
+`run.sh` wraps `docker compose`. The names are fixed, whatever the folder the repo was cloned into:
 
 | | value |
 |---|---|

@@ -119,13 +119,13 @@ first follow [docs/ursim.md](docs/ursim.md) and then come back here.
 ### 1. Clone
 
 ```bash
-git clone --recursive https://github.com/tonappa/automata_ur.git ~/ur
-cd ~/ur
+git clone --recursive https://github.com/tonappa/automata_ur.git ~/automata_ur
+cd ~/automata_ur
 ```
 
 `--recursive` also downloads the UR driver, a git submodule pinned to a tested
-commit. Keep the folder name `ur`: `run.sh` derives the image and container
-names from it, and the paths in the config use `/home/ros/ur`.
+commit. Any folder works: inside the container the workspace is always
+`/home/ros/ur`.
 
 ### 2. Build the Docker image (once)
 
