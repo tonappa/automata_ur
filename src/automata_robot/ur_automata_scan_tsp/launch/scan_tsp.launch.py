@@ -4,7 +4,6 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import LaunchConfigurationEquals
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -101,16 +100,9 @@ def generate_launch_description():
         ],
     )
 
-    # ROS <-> MQTT bridge of the photo handshake (camera topics), only for execute.
-    mqtt_bridge = Node(
-        package="mqtt_client",
-        executable="mqtt_client",
-        name="mqtt_client",
-        output="screen",
-        parameters=[os.path.join(get_package_share_directory("ur_automata_bringup"),
-                                 "config", "mqtt_bridge.yaml")],
-        condition=LaunchConfigurationEquals("mode", "execute"),
-    )
+    # The MQTT bridge is not started here: one bridge serves the whole cell
+    # (ur_automata_bringup mqtt_bridge.launch.py, included by the one-command
+    # launcher).
 
     return LaunchDescription([
         # plan: plan and save without moving | execute: load, check, execute
@@ -128,5 +120,4 @@ def generate_launch_description():
         # execute: speed relative to the plan, 1.0 = as planned, 0.5 = half speed (max 1.0)
         DeclareLaunchArgument("speed", default_value="1.0"),
         scan_node,
-        mqtt_bridge,
     ])

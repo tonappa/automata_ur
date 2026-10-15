@@ -36,6 +36,13 @@ scan3d:                                  # ROS topics of the photo handshake: se
   ...
   wait_for_next: true                    # false = do not wait for the camera
   light_topic: /scan3d/light             # scan lights (std_msgs/Bool); "" = no lights
+
+hsi:                                     # hyperspectral measurement: see ur_automata_hsi/README.md
+  link: ee_automata_hsi
+  distance: 0.30                         # m above scan.center
+  start_topic: /hsi/start
+  ...
+  wait_for_hsi: true                     # false = no HSI app, wait wait_s at the pose
 ```
 
 Notes:
@@ -74,11 +81,13 @@ Switch them by hand with
 The topic name must be the same in both files. After a change in `config.yaml`
 rebuild `ur_io_ros2_manager` and restart the bring-up.
 
-## The camera TCP
+## The camera TCP and the HSI frame
 
 The end effector is `ee_automata_V2.stl` on `tool0`. The TCP `ee_automata_tcp`
 is the **lens center**: `xyz = (0, 0.052, 0.1745)` from `tool0`, optical axis
-along its **Y** axis. A new end effector means changing both the mesh and this
+along its **Y** axis. The hyperspectral sensor frame `ee_automata_hsi` is at
+`xyz = (0, 0.072, 0.091)` from `tool0` (83.5 mm closer to the flange and 20 mm
+further forward than the camera), looking along Y too. A new end effector means changing both the mesh and this
 offset in `ur_automata_description/urdf/ur_automata.urdf.xacro`, then planning
 again.
 
@@ -118,25 +127,30 @@ colcon test --packages-select ur_automata_scan ur_automata_scan_tsp && colcon te
 
 | launch file | starts |
 |---|---|
-| `ur_automata_bringup ur_automata_bringup.launch.py` | **everything**: robot, MoveIt, scene, RViz and the scan |
+| `ur_automata_bringup ur_automata_bringup.launch.py` | **everything**: robot, MoveIt, scene, RViz, MQTT bridge, scan and HSI |
 | `ur_automata_bringup ur_automata_control.launch.py` | robot only: UR driver, controllers, digital I/O (`ur_io_ros2_manager`) |
 | `ur_automata_bringup ur_automata_moveit.launch.py` | MoveIt (`move_group`), RViz, collision scene |
-| `ur_automata_scan_tsp scan_tsp.launch.py` | scan node (+ MQTT bridge in execute), when the rest already runs |
+| `ur_automata_scan_tsp scan_tsp.launch.py` | scan node, when the rest already runs |
+| `ur_automata_hsi hsi.launch.py` | HSI node, when the rest already runs |
+| `ur_automata_bringup mqtt_bridge.launch.py` | the ROS ↔ MQTT bridge (included by the one-command launcher; by hand when the nodes above run on their own) |
 | `ur_automata_moveit_config setup_assistant.launch.py` | MoveIt Setup Assistant, to edit the MoveIt configuration |
 
 ### `ur_automata_bringup.launch.py`
 
 | argument | default | |
 |---|---|---|
-| `use_scan` | `true` | start the scan when the scene is ready; `false` = robot and MoveIt only |
+| `use_scan` | `true` | start the scan node when the scene is ready |
+| `use_hsi` | `true` | start the HSI node when the scene is ready (`use_scan:=false use_hsi:=false` = robot and MoveIt only) |
 | `mode` | `execute` | `execute` = load the plan and wait for objects · `plan` = compute a plan, the robot does not move |
 | `plan_file` | `recordings/scan_tsp_real.yaml` | plan to execute; **required** with `mode:=plan` (so an existing plan is never overwritten) |
 | `order` | `alternate` | `plan` only: `alternate`, `tsp`, `gtsp`, `sectors` |
-| `speed` | `0.3` | `execute` only: fraction of the planned speed (max 1.0) |
-| `use_moveit`, `use_rviz`, `use_scene` | from the config | the scan needs MoveIt and the scene |
+| `speed` | `0.4` | scan (`execute`) and HSI: fraction of the planned speed (max 1.0); velocities × speed, accelerations × speed² |
+| `use_moveit`, `use_rviz`, `use_scene` | from the config | scan and HSI need MoveIt and the scene |
 
-The scan node starts only when the scene node has finished loading the
-collision objects in MoveIt: it checks the plan against the scene right away.
+The scan and HSI nodes start only when the scene node has finished loading the
+collision objects in MoveIt: the scan checks its plan against the scene right
+away, the HSI uses it for its collision checks. The MQTT bridge starts with
+them whenever one of the two is on.
 
 ### `ur_automata_control.launch.py`
 

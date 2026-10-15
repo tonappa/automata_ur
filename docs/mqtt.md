@@ -1,12 +1,15 @@
-# MQTT interface: camera and orchestrator
+# MQTT interface: camera, HSI and orchestrator
 
 [← back to the README](../README.md)
 
 The robot talks to the outside world over **MQTT**. Inside ROS everything is on
-`std_msgs/String` topics under `/scan3d/`; the
-[`mqtt_client`](https://github.com/ika-rwth-aachen/mqtt_client) bridge copies
-them to and from the MQTT broker. The bridge is started by the scan launch file
-in `mode:=execute` only.
+`std_msgs/String` topics under `/scan3d/` (3D scan) and `/hsi/` (hyperspectral
+measurement); one [`mqtt_client`](https://github.com/ika-rwth-aachen/mqtt_client)
+bridge copies them to and from the MQTT broker. The bridge is started by
+`ur_automata_bringup mqtt_bridge.launch.py`, included by the one-command
+launcher. Every task follows the same pattern: `automata/<task>/start` and
+`automata/<task>/done` with the orchestrator, `<device>/commands` and
+`<device>/status` with the device app.
 
 ```mermaid
 flowchart LR
@@ -29,7 +32,7 @@ flowchart LR
     BRK -- "automata/scan3d/done" --> ORC
 ```
 
-## Topics and messages
+## 3D scan: topics and messages
 
 | MQTT topic | ROS topic | Direction | Message |
 |---|---|---|---|
@@ -51,12 +54,34 @@ flowchart LR
 - **done** is sent after the robot is back in `home`, so the object can be
   handled as soon as it arrives.
 
+## HSI measurement: topics and messages
+
+| MQTT topic | ROS topic | Direction | Message |
+|---|---|---|---|
+| `automata/hsi/start` | `/hsi/start` | orchestrator → robot | object name, e.g. `object_1` |
+| `hsi/commands` | `/hsi/acquire` | robot → HSI app | `acquire: object_1; hsi pose: [x, y, z, qx, qy, qz, qw]` |
+| `hsi/status` | `/hsi/status` | HSI app → robot | JSON `{"state": "...", "object": "object_1", "timestamp": ...}` |
+| `automata/hsi/done` | `/hsi/done` | robot → orchestrator | `hsi object_1`, or `hsi object_1 ERROR` |
+
+- **HSI pose**: frame `ee_automata_hsi` in `world` (m, quaternion x, y, z, w),
+  viewing axis = Y. It is 30 cm above the plate center, looking down.
+- The measurement starts **only with the robot in `home`** (that is, after the
+  `done` of the 3D scan); otherwise the answer is `hsi object_1 ERROR` at once.
+- **done** is sent after the robot is back in `home`.
+
+**For the HSI app developers** — the same contract as the VimbaX camera app:
+subscribe to `hsi/commands`; on an `acquire` message move from `ready` to
+`measuring`, measure, publish `measure_complete` with the same `object` on
+`hsi/status`, then go back to `ready`. Commands received outside `ready` can be
+ignored. A JSON status with at least `state` and `object` is enough.
+
 ## Rules for the orchestrator
 
 - Send `start` **without the retain flag**. A retained start would be delivered
   again every time the bridge reconnects and would start a scan nobody asked for.
-- Send a new `start` only after the `done` of the previous scan: a start during
-  a scan is ignored.
+- One task at a time: send a new `start` (scan or HSI) only after the `done` of
+  the previous one. A start of the same task during a run is ignored; an HSI
+  start away from `home` is refused.
 - Object names must not be only a number or `true`/`false`: the bridge would
   turn them into Int32/Bool and the robot would not receive them.
 
@@ -100,13 +125,20 @@ mosquitto_pub -t 'automata/scan3d/start' -q 1 -m 'object_1'
 
 # answer as the camera (when the camera app is not running), waypoint 5
 mosquitto_pub -t 'vimbax/status' -m '{"state": "measure_complete", "object": "object_1", "waypoint": 5}'
+
+# HSI: start, then answer as the HSI app when the robot is above the object
+mosquitto_pub -t 'automata/hsi/start' -q 1 -m 'object_1'
+mosquitto_pub -t 'hsi/status' -m '{"state": "measure_complete", "object": "object_1"}'
 ```
+
+To run the HSI without any answer set `hsi.wait_for_hsi: false`: the robot
+stays `hsi.wait_s` seconds above the object and goes back.
 
 To run the robot without any camera set `scan3d.wait_for_next: false` in
 `automata_config.yaml`: it still sends the requests but does not wait.
 
 ## Changing topic names
 
-ROS topic names are in the `scan3d:` section of `automata_config.yaml`, MQTT
-topic names in `mqtt_bridge.yaml`. Change both sides together and rebuild
+ROS topic names are in the `scan3d:` and `hsi:` sections of
+`automata_config.yaml`, MQTT topic names in `mqtt_bridge.yaml`. Change both sides together and rebuild
 `ur_automata_bringup`.

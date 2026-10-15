@@ -251,6 +251,24 @@ scan3d:
                                      #      (then done); "" = no lights. Robot digital output DO0 through
                                      #      ur_io_ros2_manager: the same name must be in its config.yaml
 
+# Hyperspectral measurement (ur_automata_hsi), after the 3D scan. On an object
+# name on start_topic: the robot must be in planning.home_pose_name; the HSI
+# frame goes `distance` above scan.center (north pole, looking down), with the
+# rotation about the vertical that needs the smallest motion from home; then
+# the request on acquire_topic, the wait for "measure_complete" with the same
+# object on status_topic, back home, "hsi <object>" on done_topic. MQTT topics
+# in mqtt_bridge.yaml. Scan lights stay off. Speed: the `speed` argument of the
+# launch files, the same as the scan.
+hsi:
+  link:           ee_automata_hsi    # URDF frame of the sensor (ur_automata.urdf.xacro)
+  distance:       0.30               # m, from scan.center to the HSI frame
+  start_topic:    /hsi/start         # in:  object name "object_1"
+  acquire_topic:  /hsi/acquire       # out: "acquire: object_1; hsi pose: [x, y, z, qx, qy, qz, qw]"
+  status_topic:   /hsi/status        # in:  HSI app state, JSON {"state", "object", ...}
+  done_topic:     /hsi/done          # out: "hsi object_1" (or "hsi object_1 ERROR") back in home
+  wait_for_hsi:   true               # false: no HSI app, stay wait_s at the pose and go back
+  wait_s:         3.0
+
 # Robot digital I/O <-> std_msgs/Bool topics: not here, in
 # src/utils/ur_io_ros2_manager/config/config.yaml (read by ur_io_ros2_manager,
 # started by ur_automata_control.launch.py). After a change there: rebuild

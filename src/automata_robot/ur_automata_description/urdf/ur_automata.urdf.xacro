@@ -133,4 +133,15 @@
   </joint>
   <link name="ee_automata_tcp"/>
 
+  <!-- Hyperspectral sensor (HSI) on the same end effector: 83.5 mm closer to
+       the flange than the camera (z 174.5 - 83.5 = 91 mm) and 20 mm further
+       forward, toward the object (y 52 + 20 = 72 mm). It looks along Y, like
+       the camera. Used by ur_automata_hsi. -->
+  <joint name="ee_automata_hsi_fixed_joint" type="fixed">
+    <origin xyz="0 0.072 0.091" rpy="0 0 0"/>
+    <parent link="tool0"/>
+    <child link="ee_automata_hsi"/>
+  </joint>
+  <link name="ee_automata_hsi"/>
+
 </robot>

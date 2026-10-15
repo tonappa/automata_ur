@@ -134,7 +134,8 @@ ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute speed:=0.5   #
 ```
 
 **Photo handshake.** As `std_msgs/String`, bridged to MQTT by `mqtt_client`
-(started by this launch file with `mode:=execute`):
+(`ur_automata_bringup mqtt_bridge.launch.py`: started by the one-command
+launcher, by hand when this launch file is used on its own):
 
 | topic (default) | direction | payload |
 |---|---|---|

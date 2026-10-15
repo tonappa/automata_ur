@@ -45,50 +45,72 @@ def launch_setup(context):
 
     actions = [ur_automata_control_launch, ur_automata_moveit_launch]
 
-    if LaunchConfiguration('use_scan').perform(context) != 'true':
+    use_scan = LaunchConfiguration('use_scan').perform(context) == 'true'
+    use_hsi = LaunchConfiguration('use_hsi').perform(context) == 'true'
+    if not use_scan and not use_hsi:
         return actions
-
-    # --- Scan (scan_tsp_node + MQTT bridge in execute) ---
-    mode = LaunchConfiguration('mode').perform(context)
-    plan_file = LaunchConfiguration('plan_file').perform(context)
-    if mode not in ('execute', 'plan'):
-        raise RuntimeError("mode must be execute or plan, not '" + mode + "'.")
-    if plan_file == '':
-        if mode == 'plan':
-            # mode:=plan writes plan_file: no default, so a working plan is
-            # never overwritten by mistake.
-            raise RuntimeError("mode:=plan needs plan_file:=/home/ros/ur/recordings/<new name>.yaml "
-                               "(the plan is written there).")
-        plan_file = DEFAULT_PLAN_FILE
     if (LaunchConfiguration('use_moveit').perform(context) != 'true' or
             LaunchConfiguration('use_scene').perform(context) != 'true'):
-        raise RuntimeError("use_scan:=true needs use_moveit:=true and use_scene:=true "
-                           "(or use_scan:=false).")
+        raise RuntimeError("use_scan:=true and use_hsi:=true need use_moveit:=true and use_scene:=true "
+                           "(or use_scan:=false use_hsi:=false).")
 
-    scan_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('ur_automata_scan_tsp'),
-                         'launch', 'scan_tsp.launch.py')
-        ),
-        launch_arguments={
-            'mode':      mode,
-            'plan_file': plan_file,
-            'order':     LaunchConfiguration('order'),
-            'speed':     LaunchConfiguration('speed'),
-        }.items(),
-    )
+    # One ROS <-> MQTT bridge for the scan and the HSI.
+    actions.append(IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg_share_dir, 'launch', 'mqtt_bridge.launch.py'))
+    ))
+
+    # The nodes started after the scene is ready.
+    after_scene = []
+    message = "[ur_automata_bringup] scene ready: starting"
+
+    # --- 3D scan (scan_tsp_node) ---
+    if use_scan:
+        mode = LaunchConfiguration('mode').perform(context)
+        plan_file = LaunchConfiguration('plan_file').perform(context)
+        if mode not in ('execute', 'plan'):
+            raise RuntimeError("mode must be execute or plan, not '" + mode + "'.")
+        if plan_file == '':
+            if mode == 'plan':
+                # mode:=plan writes plan_file: no default, so a working plan is
+                # never overwritten by mistake.
+                raise RuntimeError("mode:=plan needs plan_file:=/home/ros/ur/recordings/<new name>.yaml "
+                                   "(the plan is written there).")
+            plan_file = DEFAULT_PLAN_FILE
+        after_scene.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(get_package_share_directory('ur_automata_scan_tsp'),
+                             'launch', 'scan_tsp.launch.py')
+            ),
+            launch_arguments={
+                'mode':      mode,
+                'plan_file': plan_file,
+                'order':     LaunchConfiguration('order'),
+                'speed':     LaunchConfiguration('speed'),
+            }.items(),
+        ))
+        message += " the scan (mode " + mode + ", plan " + plan_file + ")"
+
+    # --- Hyperspectral measurement (hsi_node) ---
+    if use_hsi:
+        after_scene.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(get_package_share_directory('ur_automata_hsi'), 'launch', 'hsi.launch.py')
+            ),
+            launch_arguments={'speed': LaunchConfiguration('speed')}.items(),
+        ))
+        message += " the HSI node"
 
     # The scan node checks the plan against the MoveIt scene as soon as it
-    # starts, so it must not start before the scene is complete. The scene node
-    # waits for move_group, adds the objects and exits: the scan starts then.
-    def start_scan_after_scene(event, context):
+    # starts, and the HSI node reads the scene for its collision checks, so
+    # they must not start before the scene is complete. The scene node waits
+    # for move_group, adds the objects and exits: they start then.
+    def start_after_scene(event, context):
         if event.process_name.startswith('scene_publisher_node'):
-            print("[ur_automata_bringup] scene ready: starting the scan (mode " + mode +
-                  ", plan " + plan_file + ")")
-            return [scan_launch]
+            print(message)
+            return after_scene
         return None
 
-    actions.append(RegisterEventHandler(OnProcessExit(on_exit=start_scan_after_scene)))
+    actions.append(RegisterEventHandler(OnProcessExit(on_exit=start_after_scene)))
     return actions
 
 
@@ -127,6 +149,12 @@ def generate_launch_description():
                         'false: robot bring-up and MoveIt only.'
         ),
         DeclareLaunchArgument(
+            'use_hsi',
+            default_value='true',
+            description='Start hsi_node (hyperspectral measurement) after the scene is ready '
+                        '(needs use_moveit and use_scene).'
+        ),
+        DeclareLaunchArgument(
             'mode',
             default_value='execute',
             description='execute: load plan_file and wait for the object on /scan3d/start (MQTT bridge on) | '
@@ -145,8 +173,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'speed',
-            default_value='0.3',
-            description='mode:=execute only: speed relative to the plan (1.0 = as planned, max 1.0).'
+            default_value='0.4',
+            description='Speed of the scan (mode:=execute) and of the HSI motions: fraction of '
+                        'planning.trajectory_scaling_factor (1.0 = as planned, max 1.0).'
         ),
     ]
 

@@ -32,7 +32,6 @@
 
   <exec_depend>ur_automata_bringup</exec_depend>
   <exec_depend>ur_automata_moveit_config</exec_depend>
-  <exec_depend>mqtt_client</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

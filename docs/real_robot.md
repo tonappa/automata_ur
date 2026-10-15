@@ -94,7 +94,7 @@ ros2 service call /controller_manager/list_controllers controller_manager_msgs/s
 - Set the PolyScope **speed slider** to 20–30 %: the
   `scaled_joint_trajectory_controller` follows it and slows the motion without
   changing its path.
-- Start with `speed:=0.3` (the default of the launcher) or lower.
+- Start with the launcher default `speed:=0.4` or lower (it applies to the scan and to the HSI).
 - Keep the emergency stop within reach and check in RViz that the scene (table,
   platform, object) really matches the cell before a full scan.
 - Planning a new scan (`mode:=plan`) never moves the robot.

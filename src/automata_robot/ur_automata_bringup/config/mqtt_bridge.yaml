@@ -1,8 +1,10 @@
-# ROS <-> MQTT bridge (ika-rwth-aachen/mqtt_client) for the photo handshake of
-# scan_tsp_node mode:=execute. Started by scan_tsp.launch.py with mode:=execute.
-# The ROS topics are the scan3d: section of automata_config.yaml; the MQTT
-# topics are the ones of the VimbaX camera app (mqtt_client_tutorial) and of the
-# orchestrator (automata/scan3d/start in, automata/scan3d/done out). Start and done
+# ROS <-> MQTT bridge (ika-rwth-aachen/mqtt_client), one for the whole cell:
+# 3D scan (scan_tsp_node) and HSI measurement (hsi_node). Started by
+# mqtt_bridge.launch.py (included by ur_automata_bringup.launch.py).
+# The ROS topics are the scan3d: and hsi: sections of automata_config.yaml; the
+# MQTT topics are the ones of the VimbaX camera app (mqtt_client_tutorial), of
+# the HSI app (hsi/commands, hsi/status) and of the orchestrator
+# (automata/<task>/start in, automata/<task>/done out). Start and done
 # are two separate MQTT topics: with only one, the bridge would get back its own
 # "done" message and forward it to /scan3d/start as a new scan.
 # The object name must not be only a number or true/false: the bridge would turn
@@ -19,6 +21,8 @@
         ros_topics:
           - /scan3d/acquire
           - /scan3d/done
+          - /hsi/acquire
+          - /hsi/done
         /scan3d/acquire:
           mqtt_topic: vimbax/commands
           primitive: true
@@ -33,10 +37,26 @@
           advanced:
             mqtt:
               qos: 1
+        /hsi/acquire:
+          mqtt_topic: hsi/commands
+          primitive: true
+          ros_type: std_msgs/msg/String
+          advanced:
+            mqtt:
+              qos: 1
+        /hsi/done:
+          mqtt_topic: automata/hsi/done
+          primitive: true
+          ros_type: std_msgs/msg/String
+          advanced:
+            mqtt:
+              qos: 1
       mqtt2ros:
         mqtt_topics:
           - vimbax/status
           - automata/scan3d/start
+          - hsi/status
+          - automata/hsi/start
         vimbax/status:
           ros_topic: /scan3d/status
           primitive: true
@@ -45,6 +65,18 @@
               qos: 1
         automata/scan3d/start:
           ros_topic: /scan3d/start
+          primitive: true
+          advanced:
+            mqtt:
+              qos: 1
+        hsi/status:
+          ros_topic: /hsi/status
+          primitive: true
+          advanced:
+            mqtt:
+              qos: 1
+        automata/hsi/start:
+          ros_topic: /hsi/start
           primitive: true
           advanced:
             mqtt:

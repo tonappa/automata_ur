@@ -18,6 +18,7 @@
   <exec_depend>ur_description</exec_depend>
   <exec_depend>ur_moveit_config</exec_depend>
   <exec_depend>ur_io_ros2_manager</exec_depend>
+  <exec_depend>mqtt_client</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>rviz2</exec_depend>

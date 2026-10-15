@@ -2,7 +2,8 @@
 
 <p align="center">
   A Universal Robots UR5 moves a camera on a sphere around an object and takes a
-  photo at every point, driven by ROS 2 and MoveIt 2 and coordinated over MQTT.
+  photo at every point, then places a hyperspectral sensor above it, driven by
+  ROS 2 and MoveIt 2 and coordinated over MQTT.
 </p>
 
 <p align="center">
@@ -26,6 +27,9 @@
    it the exact camera pose; it moves on when the camera says the photo is done.
 4. At the end the robot goes back to `home`, switches the lights off and tells
    the orchestrator the scan is **done**.
+5. On a second request the robot places the **hyperspectral sensor (HSI)**
+   30 cm above the object, waits for the HSI measurement, goes back home and
+   reports **done** again.
 
 Highlights:
 
@@ -35,8 +39,8 @@ Highlights:
 - 🛡️ **Safe by design.** Before moving, the saved plan is checked against the
   current robot model and collision scene; if anything changed, the robot does
   not move and the reasons are listed.
-- 🔌 **One command.** Robot driver, MoveIt, scene and scan start with a single
-  `ros2 launch`.
+- 🔌 **One command.** Robot driver, MoveIt, scene, scan, HSI and the MQTT
+  bridge start with a single `ros2 launch`.
 - 🧪 **Same code in simulation and on the real robot** (URSim or a real UR
   controller): only the IP and the calibration file change.
 
@@ -46,22 +50,27 @@ Highlights:
 flowchart LR
     ORC["🧭 Orchestrator"]
     CAM["📷 Camera app<br/>(VimbaX)"]
+    HSIAPP["🌈 HSI app"]
     BRK(("MQTT broker<br/>Mosquitto"))
 
     subgraph DOCKER["🐳 Docker container — ROS 2 Jazzy"]
         BRIDGE["mqtt_client<br/>bridge"]
         SCAN["scan_tsp_node<br/>(plan / execute)"]
+        HSI["hsi_node"]
         MOVEIT["MoveIt 2<br/>move_group + scene"]
         DRIVER["ur_robot_driver"]
     end
 
     ROBOT["🦾 UR5 controller<br/>(real robot or URSim)"]
 
-    ORC <-->|"automata/scan3d/start · done"| BRK
+    ORC <-->|"automata/scan3d · automata/hsi<br/>start · done"| BRK
     CAM <-->|"vimbax/commands · status"| BRK
+    HSIAPP <-->|"hsi/commands · status"| BRK
     BRK <--> BRIDGE
     BRIDGE <-->|"/scan3d/*"| SCAN
+    BRIDGE <-->|"/hsi/*"| HSI
     SCAN --> MOVEIT
+    HSI --> MOVEIT
     MOVEIT --> DRIVER
     DRIVER <-->|"TCP/IP"| ROBOT
 ```
@@ -182,6 +191,14 @@ The robot scans the object; the photos land in
 `~/mqtt_client_tutorial/applications/VimbaX/measures/object_1/`. To watch the
 messages: `mosquitto_sub -t 'automata/scan3d/#' -t 'vimbax/#' -v`.
 
+**Then the hyperspectral measurement** (robot back in `home` after the scan):
+
+```bash
+mosquitto_pub -t 'automata/hsi/start' -q 1 -m 'object_1'
+# the HSI app is still in development: answer by hand when the robot is above the object
+mosquitto_pub -t 'hsi/status' -m '{"state": "measure_complete", "object": "object_1"}'
+```
+
 > ⚠️ **First time on a real robot:** keep the emergency stop within reach, set
 > the speed slider on the pendant to 20–30 % and check in RViz that the scene
 > (table, platform, object) matches the real cell.
@@ -193,14 +210,15 @@ All `ros2` commands run in the container. A second shell in the same container:
 
 | I want to… | Command |
 |---|---|
-| run experiments (default plan, speed 0.3) | `ros2 launch ur_automata_bringup ur_automata_bringup.launch.py` |
-| run slower or faster | `… ur_automata_bringup.launch.py speed:=0.5` (max 1.0 = as planned) |
+| run experiments (default plan, speed 0.4) | `ros2 launch ur_automata_bringup ur_automata_bringup.launch.py` |
+| run slower or faster (scan and HSI) | `… ur_automata_bringup.launch.py speed:=0.5` (max 1.0 = as planned) |
 | execute another plan | `… ur_automata_bringup.launch.py plan_file:=/home/ros/ur/recordings/<plan>.yaml` |
 | compute a new plan (robot does not move) | `… ur_automata_bringup.launch.py mode:=plan plan_file:=/home/ros/ur/recordings/<new>.yaml` |
 | plan in sectors instead of TSP | add `order:=sectors` (also `tsp`, `gtsp`; default `alternate`) |
-| only robot + MoveIt, no scan | `… ur_automata_bringup.launch.py use_scan:=false` |
+| only robot + MoveIt, no scan and no HSI | `… ur_automata_bringup.launch.py use_scan:=false use_hsi:=false` |
+| HSI measurement | `mosquitto_pub -t 'automata/hsi/start' -q 1 -m 'object_1'` (robot in `home`) |
 | pause / resume a running scan | `ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}` · `…/start …` |
-| test without camera | set `scan3d.wait_for_next: false` in the config |
+| test without camera / HSI app | set `scan3d.wait_for_next: false` / `hsi.wait_for_hsi: false` in the config |
 
 After **every** restart of the bring-up press **Play** on the pendant again.
 A new plan is needed only when the cell changes (platform, sphere, end effector,
@@ -217,6 +235,7 @@ is read by every launch file:
 | `planning:` | MoveIt group, TCP link, home poses, speed of the planning, RViz/scene on or off |
 | `scan:` | sphere center and radius, waypoint grid, IK and planner settings, platform mesh, keep-outs, walls |
 | `scan3d:` | ROS topics of the photo handshake and of the scan lights, `wait_for_next` |
+| `hsi:` | HSI distance above the object, speed, ROS topics, `wait_for_hsi` |
 
 Robot digital I/O (e.g. the scan lights on DO0) is mapped to ROS topics in
 [`ur_io_ros2_manager/config/config.yaml`](src/utils/ur_io_ros2_manager/config/config.yaml).
@@ -241,7 +260,8 @@ ur/
     │   ├── ur_automata_moveit_config/  MoveIt configuration (SRDF, TRAC-IK, OMPL, Pilz)
     │   ├── ur_automata_scene/          collision scene: table, platform, object, keep-outs
     │   ├── ur_automata_scan/           sphere waypoints, IK, sequence planner (library)
-    │   └── ur_automata_scan_tsp/       scan_tsp_node: plan and execute the scan
+    │   ├── ur_automata_scan_tsp/       scan_tsp_node: plan and execute the scan
+    │   └── ur_automata_hsi/            hsi_node: hyperspectral measurement above the object
     └── utils/
         ├── Universal_Robots_ROS2_Driver/   UR driver (git submodule, read-only)
         └── ur_io_ros2_manager/             robot digital I/O on topics
@@ -253,18 +273,21 @@ ur/
 |---|---|
 | [docs/real_robot.md](docs/real_robot.md) | network, kinematic calibration, power-on sequence, first motion |
 | [docs/ursim.md](docs/ursim.md) | try everything in the official UR simulator |
-| [docs/mqtt.md](docs/mqtt.md) | MQTT topics and messages, camera app, orchestrator rules |
+| [docs/mqtt.md](docs/mqtt.md) | MQTT topics and messages, camera and HSI apps, orchestrator rules |
 | [docs/scan.md](docs/scan.md) | how the scan is planned, all scan parameters, scene, measured results |
 | [docs/configuration.md](docs/configuration.md) | config file, launch arguments, what to rebuild after a change |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | known problems and fixes |
 | [ur_automata_scan_tsp/README.md](src/automata_robot/ur_automata_scan_tsp/README.md) | the TSP planning method in depth |
+| [ur_automata_hsi/README.md](src/automata_robot/ur_automata_hsi/README.md) | the hyperspectral measurement: geometry, rules, usage |
 
 ## Known limitations
 
-- The robot waits for the camera **without a timeout**: if the camera never
-  answers, the scan stays on that waypoint (stop it with Ctrl+C).
+- The robot waits for the camera and the HSI app **without a timeout**: if they
+  never answer, the robot stays where it is (stop it with Ctrl+C).
 - The orchestrator only gets the final `done`; a robot status topic
-  (ready / scanning / error) is not there yet.
+  (ready / scanning / error) is not there yet. Send one command at a time and
+  wait for its `done`.
+- The HSI app is in development: its messages are simulated by hand for now.
 - *Play* on the teach pendant is always manual.
 
 ## Built with
