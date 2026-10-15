@@ -1,918 +1,276 @@
-# ur — ROS 2 workspace for the `ur_automata` cell
+<h1 align="center">ur_automata — robotic 3D scanning cell</h1>
 
-ROS 2 **Jazzy** workspace that drives a Universal Robots arm (the `ur_automata`
-cell) with **MoveIt 2**, either in the **URSim** simulator or on the **real
-robot**. All development happens inside a Docker container: the repo root is
-mounted into the container and built there with `colcon`.
+<p align="center">
+  A Universal Robots UR5 moves a camera on a sphere around an object and takes a
+  photo at every point, driven by ROS 2 and MoveIt 2 and coordinated over MQTT.
+</p>
 
-The ROS interface is the same in both cases: same `/joint_states`, same
-`/scaled_joint_trajectory_controller/follow_joint_trajectory` action, same
-controllers, same MoveIt setup. Only the **controller IP** and the declared
-**robot model** change. Underneath, `ur_robot_driver` talks either to a real UR
-controller or to the one simulated by URSim, and nothing above it notices.
-
-Main application: a **spherical scan** of the object placed on the platform.
-The TCP visits a grid of waypoints on a sphere centered on the object, always
-pointing at it; a photo can be taken at each waypoint.
-
----
-
-## Quick start (URSim)
-
-Full sequence, from a powered-off machine to a scan. Details in the numbered
-sections below.
-
-**Host, terminal 1: simulator** (it stays in the foreground).
-
-```bash
-cd ~/ur
-./start_ursim_seccomp.sh
-```
-
-Open PolyScope at http://localhost:6080: *Power on* → *Start* → *OK*, then load
-the program with the **External Control** node (Host IP `192.168.56.1`, port
-`50002`, see §6.2 for the one-time setup). Do not press Play yet.
-
-**Host, terminal 2: container, build, bring-up.**
-
-```bash
-cd ~/ur
-./run.sh run                      # opens a shell in the container
-# inside the container:
-cd /home/ros/ur
-colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=OFF --executor sequential   # after a change or a fresh clone
-source install/setup.bash
-ros2 launch ur_automata_bringup ur_automata_bringup.launch.py
-```
-
-Now press **Play** in PolyScope (again after every bring-up restart).
-
-**Host, terminals 3 and 4: second and third shell in the same container.**
-
-```bash
-docker exec -it ur_container bash
-source /opt/ros/jazzy/setup.bash && source /home/ros/ur/install/setup.bash
-```
-
-**Calibration** (once, and again after changing the cell: platform, walls,
-sphere, end effector, TCP, base pose). Terminal 3:
-
-```bash
-ros2 launch ur_automata_scan scan_sequence.launch.py record:=true 2>&1 | tee ~/ur/log/calibration.log
-```
-
-Terminal 4, when the table is shown (~1.5 min of planning):
-
-```bash
-ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
-```
-
-At the end check `Registrazione salvata: ... 0 recovery`.
-
-**Work session** (every time). Terminal 3:
-
-```bash
-ros2 launch ur_automata_scan scan_replay.launch.py 2>&1 | tee ~/ur/log/replay.log
-```
-
-Terminal 4:
-
-```bash
-ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
-ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # optional: stops after the current motion
-```
-
-**Work session with the second method** (TSP planner, shorter scan; §9.4).
-From any pose: if the robot is not in the start state of the plan (`home`), it
-goes there first. Terminal 3, then the object name from terminal 4. On every
-waypoint it waits for a message on `/scan3d/next` (photo handshake, see the
-[package README](src/automata_robot/ur_automata_scan_tsp/README.md); set
-`scan3d.wait_for_next: false` to run without the camera):
-
-```bash
-ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute 2>&1 | tee ~/ur/log/tsp_execute.log
-ros2 topic pub --once /scan3d/start std_msgs/msg/String "{data: object_1}"
-```
-
-Both work sessions accept `speed:=0.5` (or any value up to 1.0) to move slower
-without a new calibration.
-
-**Shut down:** Ctrl+C in the ROS terminals, then `./run.sh down` on the host;
-Ctrl+C in terminal 1 stops URSim (the script runs it in the foreground and
-removes the container on exit).
+<p align="center">
+  <img alt="ROS 2 Jazzy" src="https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white">
+  <img alt="MoveIt 2" src="https://img.shields.io/badge/MoveIt-2-1E88E5">
+  <img alt="Ubuntu 24.04" src="https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-required-2496ED?logo=docker&logoColor=white">
+  <img alt="Robot" src="https://img.shields.io/badge/robot-UR5%20(CB3)-555555">
+  <img alt="MQTT" src="https://img.shields.io/badge/MQTT-Mosquitto-660066?logo=eclipsemosquitto&logoColor=white">
+</p>
 
 ---
 
-## 0. Current status
+## What it does
 
-Latest reference runs in URSim (UR5 model, table mount, scan center
-`(0.133, 0.375, 0.455)`, radius 0.30 m, full sphere 4 × 15, 82 waypoints),
-with `scan_sequence_node`:
+1. An **orchestrator** asks for a scan of an object (`object_1`, `object_2`, …).
+2. The robot follows a **pre-computed plan** that visits the waypoints of a
+   sphere (radius 0.25 m) around the object, with the camera always pointing at
+   its center.
+3. On every waypoint the robot **stops, asks the camera for a photo** and sends
+   it the exact camera pose; it moves on when the camera says the photo is done.
+4. At the end the robot goes back to `home` and tells the orchestrator the
+   scan is **done**.
 
-| scene | reached | time | planners used | notes |
-|---|---|---|---|---|
-| `disk.stl` (disk only) | 82 / 82 | 124 s | PTP 81 / OMPL 2 | |
-| `platform01.stl` (full platform) | 79 / 82 | 159 s | PTP 72 / OMPL 8 | wp 38, 54, 60 lost: every IK solution collides with the platform. wp 79 is reached but the stem blocks the view |
-| `platform01.stl` + line-of-sight check | 78 / 82 | 171 s | PTP 72 / OMPL 8 | wp 60 and 79 dropped because the view is blocked, wp 38 and 54 fail IK |
+Highlights:
 
-For comparison, the first scan node (`scan_executor_node`, removed on 2026-09-29) reached 72 / 82 in 322 s
-(same sphere, older scene).
+- 🗺️ **Planned once, executed many times.** The visit order (TSP with
+  OR-Tools) and every motion are computed offline, checked against the cell and
+  saved. A scan of 77 waypoints takes about **90 s of motion**.
+- 🛡️ **Safe by design.** Before moving, the saved plan is checked against the
+  current robot model and collision scene; if anything changed, the robot does
+  not move and the reasons are listed.
+- 🔌 **One command.** Robot driver, MoveIt, scene and scan start with a single
+  `ros2 launch`.
+- 🧪 **Same code in simulation and on the real robot** (URSim or a real UR
+  controller): only the IP and the calibration file change.
 
-**Arm swings (2026-09-29).** The scan is now visited sector by sector, the
-sequence cost is the distance the elbow and the TCP actually travel, walls and a
-ceiling keep the arm inside the cell, the arm may not hide any part of the
-platform disk, and the TCP sits on the real lens center of the V2 end effector
-(see §9.2, §9.3, §10); the scan can be recorded once and replayed (§9.4). Measured on full scans in URSim:
+## How it fits together
 
-| run | reached | time | swings (elbow > 0.25 m) | elbow path | TCP path | OMPL segments |
-|---|---|---|---|---|---|---|
-| morning: rings, joint-distance cost, no walls | 78 / 82 | 163 s | not measured | – | – | 7 |
-| sectors 0°, elbow + TCP cost, no walls | 78 / 82 | 143 s | 20 | 20.0 m | 30.8 m | 5 |
-| + sectors 45°, walls | 78 / 82 | 163 s | 12 | 14.0 m | 27.2 m | 5 |
-| + RRT*, faster DP convergence | 78 / 82 | 137 s | 13 | 11.4 m | 19.9 m | 3 |
-| + whole platform visible, TCP on the lens (current) | 77 / 82 | 130 s | 12 | 12.3 m | 17.9 m | 3 |
+```mermaid
+flowchart LR
+    ORC["🧭 Orchestrator"]
+    CAM["📷 Camera app<br/>(VimbaX)"]
+    BRK(("MQTT broker<br/>Mosquitto"))
 
-The last two rows are not strictly comparable: before the TCP fix the waypoints
-were computed for a point 21.5 mm below the camera. The waypoint lost in the
-current run is in the lower hemisphere: every collision-free solution there
-hides part of the platform.
+    subgraph DOCKER["🐳 Docker container — ROS 2 Jazzy"]
+        BRIDGE["mqtt_client<br/>bridge"]
+        SCAN["scan_tsp_node<br/>(plan / execute)"]
+        MOVEIT["MoveIt 2<br/>move_group + scene"]
+        DRIVER["ur_robot_driver"]
+    end
 
-**Experimental TSP planner (2026-09-30).** The package `ur_automata_scan_tsp`
-plans the same scan with a different method: it also chooses the visit order
-(OR-Tools), plans everything without moving the robot, saves the plan and
-executes it later. `ur_automata_scan` keeps working as before and the two
-methods use separate files, so one can be run after the other without a new
-calibration. Motion time of the full scan, 77 / 82 waypoints in both:
+    ROBOT["🦾 UR5 controller<br/>(real robot or URSim)"]
 
-| method | motion time | joint travel | OMPL segments |
-|---|---|---|---|
-| `scan_sequence_node` (two calibrations) | 129.2 s, 115.0 s | 255.5, 223.8 rad | 3, 5 |
-| `scan_tsp_node order:=alternate` (two plans) | 90.8 s, 96.4 s | 178.4, 186.8 rad | 1, 2 |
-
-Method, usage and all the measured runs are in
-[`src/automata_robot/ur_automata_scan_tsp/README.md`](src/automata_robot/ur_automata_scan_tsp/README.md).
-
-Both playback nodes (`scan_replay_node` and `scan_tsp_node mode:=execute`) show
-the waypoints in RViz while they run and accept `speed:=` to play the saved
-motions slower without a new calibration (§9.4).
-
-What is left: 3–5 segments whose straight joint-space line collides, mostly in
-the lower hemisphere near the platform stem, still go to OMPL and are the
-largest motions (up to ~1.3 m of elbow travel). A set-back path (camera backs
-away from the sphere, moves, comes back) was tried for them and is never free
-in this cell: the arm is wedged between the platform and the table, and backing
-away pushes the upper arm into the platform or the wrist into the table.
-
-Possible next steps:
-
-- Pilz CIRC (arc on the sphere) before OMPL on the blocked segments;
-- tighter walls, sweeping them with `dry_run`;
-- line-of-sight check with a cone of rays matching the camera field of view,
-  instead of the single optical-axis ray;
-- photo trigger at each waypoint (on hold): an MQTT "take photo" message to
-  the camera side and a "photo taken" reply to the orchestrator before the
-  replay moves on; the hook is marked in `scan_replay_node.cpp` and in
-  `scan_tsp_node.cpp`. The measured times above do not include this stop;
-- bring-up on the real robot (calibration, IP `192.168.1.97`, low scaling,
-  diagnosing the occasional abrupt stops seen during execution).
-
----
-
-## 1. Host prerequisites
-
-- Docker Engine + the `docker compose` plugin
-- `nvidia-container-toolkit` (the compose file requests an NVIDIA GPU; without
-  one, remove the `deploy.resources.reservations.devices` section from
-  `docker-compose.yaml`)
-- X11 running (for RViz), `xauth`, `xhost`
-- the host user in the `audio` and `video` groups (`run.sh` reads their GIDs)
-
-```bash
-sudo usermod -aG audio,video $USER   # then log out and back in
+    ORC <-->|"automata/scan3d/start · done"| BRK
+    CAM <-->|"vimbax/commands · status"| BRK
+    BRK <--> BRIDGE
+    BRIDGE <-->|"/scan3d/*"| SCAN
+    SCAN --> MOVEIT
+    MOVEIT --> DRIVER
+    DRIVER <-->|"TCP/IP"| ROBOT
 ```
 
-## 2. Cloning the repo
+One scan, step by step:
 
-The UR driver (`src/utils/Universal_Robots_ROS2_Driver`) is a git submodule
-pinned to a commit of the upstream `jazzy` branch. It is built in the workspace
-and takes the place of the `ros-jazzy-ur` `.deb` packages of the Docker image:
-the driver version is the same on every PC, whenever the image is built, and
-`ur_calibration` has the fix that the 3.9.0 `.deb` lacks (see section on the
-calibration). `ur_description` comes from the `.deb` packages.
-
-```bash
-git clone <repo-url> ur
-cd ur
-git submodule update --init --recursive
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as Orchestrator
+    participant R as Robot (scan_tsp_node)
+    participant C as Camera app
+    O->>R: automata/scan3d/start  "object_1"
+    Note over R: goes to the start pose of the plan (if needed)
+    loop every waypoint of the plan
+        Note over R: moves to the waypoint
+        R->>C: vimbax/commands  acquire object_1, camera pose, waypoint n
+        Note over C: takes the photo, saves object_1_wp_n.jpg
+        C-->>R: vimbax/status  measure_complete (object_1, waypoint n)
+    end
+    Note over R: back to home
+    R->>O: automata/scan3d/done  "scan3D object_1"
 ```
 
-## 3. Docker image and container
+## Requirements
 
-`run.sh` wraps `docker compose`: it derives the names from the current folder
-and exports the host user's UID/GID, the X11/Pulse variables, the audio/video
-GIDs and the bash-history and VSCode mounts.
-
-```bash
-./run.sh build     # build the image (cached)
-./run.sh rebuild   # rebuild from scratch (--no-cache, slow)
-./run.sh run       # open an interactive shell in the container
-./run.sh down      # stop and remove the container
-```
-
-With the repo folder named `ur` you get:
-
-| | value |
+| | |
 |---|---|
-| image | `ur_ws:jazzy` |
-| container | `ur_container` |
-| workspace in the container | `/home/ros/ur` |
-| network | `host` (needed for DDS discovery and the TCP/IP link to the robot) |
-| `ROS_DOMAIN_ID` | `44` |
+| **Robot** | Universal Robots UR5 (CB3 tested; the driver also supports e-series arms) with the [External Control URCap](https://github.com/UniversalRobots/Universal_Robots_ExternalControl_URCap), or **URSim** to try without a robot |
+| **PC** | Ubuntu 24.04 (any Linux with Docker should work), Ethernet link to the robot |
+| **Software on the host** | Docker Engine + `docker compose`, `nvidia-container-toolkit` (optional, see below), X11 for RViz, Mosquitto, Python 3 |
+| **Camera** | [mqtt_client_tutorial](https://github.com/GDqbrobotics/mqtt_client_tutorial) VimbaX app: a simulated camera (`--device sim`) or a real Allied Vision camera |
 
-**Second shell in the same container** (almost always needed: bring-up in one
-terminal, scan in the other). `docker exec` does not go through the entrypoint,
-so you have to source by hand:
+Everything ROS (ROS 2 Jazzy, MoveIt 2, UR driver, OR-Tools, MQTT bridge) is
+inside the Docker image: nothing ROS is installed on the host.
+
+> No NVIDIA GPU? Remove the `deploy.resources.reservations.devices` section
+> from `docker-compose.yaml`.
+
+## Quick start
+
+From a fresh machine to a scan on the real robot. To try it without a robot,
+first follow [docs/ursim.md](docs/ursim.md) and then come back here.
+
+### 1. Clone
 
 ```bash
-docker exec -it ur_container bash
-source /opt/ros/jazzy/setup.bash
-source /home/ros/ur/install/setup.bash
+git clone --recursive https://github.com/tonappa/ur.git ~/ur
+cd ~/ur
 ```
 
-The main shell's entrypoint does it on its own: it sources ROS and
-`install/setup.bash` if it exists. It installs nothing at startup: system
-dependencies are in `docker/Dockerfile` (add new ones there, then
-`./run.sh build`).
+`--recursive` also downloads the UR driver, a git submodule pinned to a tested
+commit.
 
-## 4. Building the workspace (inside the container)
+### 2. Build the Docker image (once)
 
 ```bash
-cd /home/ros/ur
+sudo usermod -aG audio,video $USER    # once, then log out and back in
+./run.sh build
+```
+
+### 3. Build the workspace
+
+```bash
+./run.sh run                          # opens a shell in the container
 colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=OFF --executor sequential
 source install/setup.bash
 ```
 
-`-DBUILD_TESTING=OFF` skips the tests of every package, including the UR
-driver ones, whose extra dependencies (e.g. `ros2_control_test_assets`) are
-not in the image.
-
-A single package:
+### 4. Broker and camera (host, once)
 
 ```bash
-colcon build --packages-select ur_automata_bringup
-source install/setup.bash
+sudo apt install mosquitto mosquitto-clients python3-venv     # the broker starts as a service
+git clone https://github.com/GDqbrobotics/mqtt_client_tutorial.git ~/mqtt_client_tutorial
+python3 -m venv ~/venvs/vimbax
+~/venvs/vimbax/bin/pip install -r ~/mqtt_client_tutorial/requirements.txt
 ```
 
-Tests (gtest in the two scan packages; the other packages have no tests).
-Build those two with the tests first:
+### 5. Configure the cell
+
+Everything is in **one file**:
+[`ur_automata_bringup/config/automata_config.yaml`](src/automata_robot/ur_automata_bringup/config/automata_config.yaml).
+For a new robot set at least `robot.ip`, `robot.type` and `robot.calibration_file`
+(see [docs/real_robot.md](docs/real_robot.md) for the calibration), then
+rebuild the config package:
 
 ```bash
-colcon build --packages-select ur_automata_scan ur_automata_scan_tsp --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=ON
-colcon test --packages-select ur_automata_scan ur_automata_scan_tsp
-colcon test-result --verbose
+colcon build --packages-select ur_automata_bringup && source install/setup.bash
 ```
 
-> **Warning: the config file must be rebuilt.**
-> Every launch file reads `automata_config.yaml` from the **installed share**,
-> not from `src/`. After every change to the YAML run
-> `colcon build --packages-select ur_automata_bringup` and a fresh
-> `source install/setup.bash`, otherwise you keep launching the old
-> configuration.
+### 6. Run a scan
 
-Which package to rebuild after a change:
+Three terminals:
 
-| you changed | rebuild |
-|---|---|
-| `automata_config.yaml`, URDF base pose | `ur_automata_bringup` (then restart the bring-up) |
-| scene code, meshes | `ur_automata_scene` |
-| SRDF, MoveIt configs | `ur_automata_moveit_config` |
-| scan nodes | `ur_automata_scan` |
-| anything in `ur_automata_scan` used by the TSP node (headers, libraries) | `ur_automata_scan`, then `ur_automata_scan_tsp` |
-| `docker/Dockerfile` | `./run.sh build` on the host, then a new container |
-
-## 5. The single config file
-
-`src/automata_robot/ur_automata_bringup/config/automata_config.yaml` is where
-*every* parameter lives: bring-up, MoveIt, scene and scan all read it. Four
-sections:
-
-```yaml
-robot:
-  ip: 192.168.56.101          # UR controller (URSim or real)
-  type: ur5                   # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
-  base_xyz: [0.0, 0.0, 0.0]   # base pose in the world frame (m, rad), read by the xacro,
-  base_rpy: [0.0, 0.0, 0.0]   # so driver and MoveIt stay consistent. If non-zero, the scene
-                              # adds a mounting wall behind the base. Example of a wall-mounted
-                              # robot with the pan axis toward the platform:
-                              # xyz [0.133, -0.25, 0.455], rpy [-1.5708, 0, 0]
-                              # and planning.home_pose_name / lower_home_pose_name: home_wall
-
-planning:
-  group: ur_manipulator
-  global_frame: world
-  end_effector_link: ee_automata_tcp
-  trajectory_scaling_factor: 0.4
-  home_pose_name: home
-  lower_home_pose_name: lower_scan_ready
-  use_moveit: true
-  use_scene: true
-  use_rviz: true
-
-scan:
-  center: [0.133, 0.375, 0.455]
-  radius: 0.30
-  platform_sim: false
-  platform_mesh: platform02.stl
-  ...
-
-scan3d:                       # photo handshake of the TSP execute (topic names)
-  start_topic: /scan3d/start
-  ...
-  wait_for_next: true
-```
-
-Notes on `planning`:
-
-- `end_effector_link: ee_automata_tcp` is the link defined at the end of
-  `ur_automata.urdf.xacro` (offset `xyz="0 0.052 0.1745"` from `tool0`, the lens center of the V2 end effector) and must
-  match the tip link of the group in the SRDF.
-- `home_pose_name` and `lower_home_pose_name` are `group_state`s defined in
-  `ur_automata_moveit_config/config/ur_automata.srdf` (`home`, `up`,
-  `lower_scan_ready`, `home_wall`). They are the start pose and the recovery
-  poses for the upper and lower hemisphere. If you change a name here, it must
-  exist there. They are joint values, so they depend on `robot.base_rpy`: use
-  `home` / `lower_scan_ready` for the table mount, `home_wall` for the wall mount.
-- `trajectory_scaling_factor` is passed to both `setMaxVelocityScalingFactor`
-  **and** `setMaxAccelerationScalingFactor` in the scan nodes.
-- `use_moveit`, `use_rviz`, `use_scene` are the defaults of the launch arguments
-  with the same names and can be overridden from the command line.
-
-The YAML comments also keep the history of the scan positions and mounts that
-were tried, with their results.
-
----
-
-## 6. Bring-up in simulation (URSim)
-
-URSim is the official UR simulator: it runs in its own Docker container and
-exposes a complete PolyScope controller. It is not Gazebo: there is no physics
-of the environment, but the controller behavior (programs, External Control,
-safety) is the real one. It is the most faithful way to test everything before
-using the real robot.
-
-### 6.1 Start URSim (on the host, **not** inside the container)
+**Terminal 1 — camera** (host)
 
 ```bash
-./start_ursim_seccomp.sh
+cd ~/mqtt_client_tutorial
+~/venvs/vimbax/bin/python applications/VimbaX/vimbax_mqtt_app.py --device sim --measure-duration 0.5
 ```
 
-The script:
-
-- downloads the *External Control* URCap v1.0.5 (`.jar`) into `~/.ursim/e-series/urcaps`
-- creates the Docker network `ursim_net` (`192.168.56.0/24`, gateway `192.168.56.1`)
-- starts `universalrobots/ursim_e-series:5.25.1` with the fixed IP **192.168.56.101**
-- mounts the PolyScope programs and settings under `~/.ursim/e-series` (persistent)
-- uses `--security-opt seccomp=unconfined`: this is the workaround for kernels
-  ≥ 6.15, where `URControl` fails with ENOSYS on `socket()`. The simulator does
-  not start with the official `start_ursim.sh` script.
-
-PolyScope interface: browser at **http://localhost:6080** (noVNC) or a VNC
-client on `localhost:5900`.
-
-### 6.2 Prepare PolyScope
-
-1. Turn the robot on: *Power on* → *Start* → *OK* (the arm must show
-   `RUNNING`, not `IDLE`).
-2. *Installation* → *URCaps* → **External Control**:
-   - **Host IP**: `192.168.56.1` (the gateway of `ursim_net`, i.e. the host
-     running the ROS driver)
-   - **Custom port**: `50002`
-3. *Program* → add the **External Control** node to the program and save it.
-4. Press **Play** *only after* starting the ROS bring-up (step 6.3): the
-   program fails if it cannot find the driver listening.
-
-### 6.3 Start the bring-up
-
-In the container, with `robot.ip: 192.168.56.101` in `automata_config.yaml`:
+**Terminal 2 — robot, MoveIt and scan** (container)
 
 ```bash
 ros2 launch ur_automata_bringup ur_automata_bringup.launch.py
 ```
 
-What starts:
+👉 Then press **Play** on the *External Control* program on the teach pendant.
+Wait for `In attesa dell'oggetto su /scan3d/start`.
 
-- `ur_automata_control.launch.py` → the upstream driver's `ur_control.launch.py`
-  with our URDF (`ur_automata.urdf.xacro`), our controllers
-  (`ur_automata_controllers.yaml`) and `scaled_joint_trajectory_controller`
-  active
-- `ur_automata_moveit.launch.py` → `move_group` + RViz with the MotionPlanning
-  panel (if `use_moveit`/`use_rviz` are true)
-- `scene.launch.py` from `ur_automata_scene` → publishes the planning scene
-  (table, platform, object) through `/apply_planning_scene` (if `use_scene`)
-
-Command-line overrides of the top-level arguments:
+**Terminal 3 — start a scan** (host; this is what the orchestrator does)
 
 ```bash
-ros2 launch ur_automata_bringup ur_automata_bringup.launch.py \
-  use_moveit:=true use_rviz:=false use_scene:=true
+mosquitto_pub -t 'automata/scan3d/start' -q 1 -m 'object_1'
 ```
 
-Now press **Play** in PolyScope. The driver log must show
-`Robot connected to reverse interface. Ready to receive control commands.`
+The robot scans the object; the photos land in
+`~/mqtt_client_tutorial/applications/VimbaX/measures/object_1/`. To watch the
+messages: `mosquitto_sub -t 'automata/scan3d/#' -t 'vimbax/#' -v`.
 
-### 6.4 Quick check
+> ⚠️ **First time on a real robot:** keep the emergency stop within reach, set
+> the speed slider on the pendant to 20–30 % and check in RViz that the scene
+> (table, platform, object) matches the real cell.
 
-```bash
-ros2 topic echo /joint_states --once
-ros2 control list_controllers
-ros2 action list | grep follow_joint_trajectory
-```
+## Everyday commands
 
-In RViz: drag the interactive marker, *Plan*, then *Execute*. The arm moves in
-PolyScope too.
+All `ros2` commands run in the container. A second shell in the same container:
+`docker exec -it ur_container bash`, then `source install/setup.bash`.
 
----
-
-## 7. Bring-up on the real robot
-
-### 7.1 Network
-
-Connect the PC to the UR controller over Ethernet and put them on the same
-subnet. On the teach pendant: *Settings* → *System* → *Network*, static IP (the
-cell uses `192.168.1.97`). From the host:
-
-```bash
-ping 192.168.1.97
-```
-
-### 7.2 Kinematic calibration (once per robot)
-
-Every UR leaves the factory with its own measured DH parameters: without them
-the error at the tool can reach a few millimeters, up to centimeters. Do this
-**once** for each physical robot, with the controller on and reachable (the
-robot does not move, External Control is not needed):
-
-```bash
-ros2 launch ur_calibration calibration_correction.launch.py \
-  robot_ip:=192.168.1.97 \
-  target_filename:="/home/ros/ur/src/automata_robot/ur_automata_bringup/config/ur5_calibration.yaml"
-```
-
-The cell's UR5 (CB3) is already calibrated: `ur5_calibration.yaml`. The driver
-submodule must be at a commit with the `ur_calibration` fix (upstream
-`0089621`, October 2026): older versions never open the connection and loop on
-`Stream is invalid. Connect it before trying to read!`.
-
-The file name goes in `robot.calibration_file` (next section). Without it, the
-nominal values from `ur_description` are used: fine for URSim, **not** for the
-real robot.
-
-### 7.3 Configuration
-
-In `automata_config.yaml`:
-
-```yaml
-robot:
-  ip: 192.168.1.97
-  type: ur5                                # the actual model in the cell (UR5, CB3)
-  calibration_file: ur5_calibration.yaml   # in ur_automata_bringup/config; "" = nominal
-```
-
-then rebuild `ur_automata_bringup` (see §4). Both the driver and MoveIt read
-`calibration_file`: `move_group` must plan and check collisions on the same
-model as the real robot. With the calibration only in the driver, MoveIt
-plans on the nominal robot and the scan nodes (calibrated model) can refuse a
-plan for a collision of a few millimeters MoveIt did not see. The MoveIt
-launch prints `[ur_automata_moveit] kinematics: <file>` at start.
-
-```bash
-# terminal 1 — driver + controllers
-ros2 launch ur_automata_bringup ur_automata_control.launch.py
-
-# terminal 2 — MoveIt + RViz (+ scene)
-ros2 launch ur_automata_bringup ur_automata_moveit.launch.py
-```
-
-`ur_type` **must be the same in both commands**: otherwise the kinematic model
-in `move_group` does not match the TF published by the driver and the
-trajectories come out wrong without any obvious error.
-
-Useful arguments of `ur_automata_control.launch.py`:
-
-| argument | default | notes |
-|---|---|---|
-| `ur_type` | from YAML | UR model |
-| `robot_ip` | from YAML | controller IP |
-| `kinematics_params_file` | `robot.calibration_file`, or nominal if empty | YAML from `ur_calibration`; also an argument of `ur_automata_moveit.launch.py`: override both or neither |
-| `headless_mode` | `false` | `true` = the driver sends the URScript directly, without the External Control program on the pendant |
-| `tf_prefix` | `""` | prefix on joints and links |
-| `initial_joint_controller` | `scaled_joint_trajectory_controller` | MoveIt expects this one |
-
-### 7.4 Power-on sequence
-
-1. Turn on the controller and release the brakes (*Power on* → *Start*).
-2. Load the program with the **External Control** node (Host IP = IP of the PC
-   running ROS, port `50002`).
-3. Start the ROS bring-up.
-4. Press **Play** on the pendant.
-
-> **Every time you restart the bring-up you must press Play again**: when the
-> driver stops, the URScript program on the controller ends and has to be
-> restarted by hand.
-
-### 7.5 First motion
-
-- Lower `trajectory_scaling_factor` to `0.05`–`0.1` for the first moves.
-- Set the PolyScope *speed slider* to 20–30%: the
-  `scaled_joint_trajectory_controller` respects it and slows down the
-  trajectory without deforming it.
-- Keep the emergency stop within reach; check that the MoveIt scene (table,
-  platform, object) really matches the physical layout before running a full
-  scan.
-
----
-
-## 8. Simulation vs real robot: what to change
-
-| | URSim | Real robot |
-|---|---|---|
-| `robot.ip` | `192.168.56.101` | controller IP (e.g. `192.168.1.97`) |
-| `robot.type` | `ur5` (the URSim e-series image with `ROBOT_MODEL=UR5` is really a UR5e) | the real model: `ur5` (CB3) in this cell |
-| `robot.calibration_file` | `""` (nominal) | **required**: the YAML from `ur_calibration`, e.g. `ur5_calibration.yaml` |
-| `trajectory_scaling_factor` | `0.4` is fine | start from `0.05`–`0.1` |
-| `planning.use_rviz` | `true` | `true` to check, `false` in production |
-| `scan.platform_sim` / `platform_mesh` | either | `false` + the STL that matches the real platform |
-| External Control | Play in PolyScope via noVNC | Play on the teach pendant, after every bring-up |
-| start | `./start_ursim_seccomp.sh` + bring-up | bring-up only |
-
-Everything else (controllers, MoveIt, scene, scan nodes) stays the same.
-
----
-
-## 9. Running the scan
-
-With the bring-up running, in a second container shell:
-
-```bash
-ros2 launch ur_automata_scan scan_sequence.launch.py
-```
-
-The node:
-
-1. generates the waypoints on the sphere (`scan.center`, `scan.radius`,
-   hemisphere, direction, equator exclusion) and puts them in visit order:
-   ring by ring, or sector by sector with `sectors` > 0 (§9.3);
-2. **discards waypoints whose view is blocked**: it casts a ray from the
-   waypoint to the center against the scene objects and drops the waypoint if
-   something is in the way (for example the platform stem). See §9.2;
-3. **enumerates offline** the IK solutions of each remaining waypoint (TRAC-IK
-   in `Speed` mode, several pitch values and several seeds per branch),
-   discarding those that collide with the scene or where the arm itself blocks
-   the camera→center view;
-4. picks the sequence with a **layered dynamic program (DP)**: for every
-   waypoint it chooses one IK solution so that the arm
-   travels as little as possible in space (elbow path + TCP path along each
-   joint-space segment, plus a small joint term);
-5. executes waypoint by waypoint, trying the `planners` chain and falling back
-   to a nearby point if a waypoint is unreachable;
-6. goes back to `home` and prints a summary (reached / failed, causes, time,
-   how many times each planner was used, how many waypoints were dropped for a
-   blocked view, arm swings measured on the executed trajectories).
-
-**The scan always starts paused.** To start or pause it:
-
-```bash
-ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
-ros2 service call /scan_sequence_node/pause std_srvs/srv/Trigger {}
-```
-
-If the node runs in an interactive terminal (not through `ros2 launch`), keys
-also work: **SPACE** = pause/resume, **Q** = quit.
-
-To save a run for later comparison:
-
-```bash
-ros2 launch ur_automata_scan scan_sequence.launch.py 2>&1 | tee ~/ur/log/<name>.log
-# summary lines, ANSI colors stripped:
-sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' ~/ur/log/<name>.log \
-  | grep -E 'Sequenza:|Previsione:|Scan complete|Planner usati|Tempo scansione|Sbracciate:' | sort -u
-```
-
-> The waypoint markers (spheres + orientation arrows, colored by status) are
-> published on `/scan_waypoints_markers`. The bring-up's `automata.rviz` config
-> already has the **Scan waypoints** display on that topic, so you do not need
-> to add it by hand. If you launch RViz with another config, create the display.
-
-### 9.1 Scan parameters (`scan:`)
-
-**Geometry**
-
-| parameter | effect |
+| I want to… | Command |
 |---|---|
-| `center` | sphere center in the `planning.global_frame` frame, in meters (top face of the platform disk) |
-| `radius` | sphere radius. This is the hardest constraint: increasing it quickly pushes waypoints out of reach |
-| `hemisphere` | `upper` \| `lower` \| `full` (upper first, then lower) |
-| `direction` | `latitudinal` (ring by ring) \| `longitudinal` (meridian by meridian) |
-| `num_rings`, `points_per_ring` | density in latitudinal mode |
-| `num_arc`, `points_per_arc` | density in longitudinal mode |
-| `equator_exclusion_upper_deg`, `equator_exclusion_lower_deg` | forbidden band around the equator: the robot cannot point in line with the support. The two hemispheres can use different values |
-| `stagger_rings` | even rings shifted by half a step → more uniform coverage |
-| `adaptive_rings` | points per ring scale with `sin(theta)`: fewer near the pole, more near the equator |
+| run experiments (default plan, speed 0.3) | `ros2 launch ur_automata_bringup ur_automata_bringup.launch.py` |
+| run slower or faster | `… ur_automata_bringup.launch.py speed:=0.5` (max 1.0 = as planned) |
+| execute another plan | `… ur_automata_bringup.launch.py plan_file:=/home/ros/ur/recordings/<plan>.yaml` |
+| compute a new plan (robot does not move) | `… ur_automata_bringup.launch.py mode:=plan plan_file:=/home/ros/ur/recordings/<new>.yaml` |
+| plan in sectors instead of TSP | add `order:=sectors` (also `tsp`, `gtsp`; default `alternate`) |
+| only robot + MoveIt, no scan | `… ur_automata_bringup.launch.py use_scan:=false` |
+| pause / resume a running scan | `ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}` · `…/start …` |
+| test without camera | set `scan3d.wait_for_next: false` in the config |
 
-**TCP orientation**
+After **every** restart of the bring-up press **Play** on the pendant again.
+A new plan is needed only when the cell changes (platform, sphere, end effector,
+TCP, robot model): the execute mode tells you if it is out of date.
 
-| parameter | effect |
+## Configuration at a glance
+
+[`automata_config.yaml`](src/automata_robot/ur_automata_bringup/config/automata_config.yaml)
+is read by every launch file:
+
+| Section | What is in it |
 |---|---|
-| `lock_pitch` | `true`: TCP X axis horizontal, no rotation about Y. `false`: free pitch, the node searches for an offset with a valid IK |
-| `pitch_search_range_deg`, `pitch_search_step_deg` | range and step of the pitch search |
-| `pitch_xparallel_bias` | `0.0` = any pitch is fine; `0.05` = mild preference for X parallel; `>0.3` = X parallel almost always |
-| `occlusion_check`, `occlusion_disk_radius`, `occlusion_margin` | discards IK solutions where an arm link hides part of the platform disk from the camera. Sight lines go from the camera to the disk center and to 24 points on its rim (QR codes all around the platform, on top and below) and are checked against the real arm collision meshes, in both hemispheres. `occlusion_margin` = how close a link may come to a line of sight. |
+| `robot:` | controller IP, UR model, calibration file, base pose |
+| `planning:` | MoveIt group, TCP link, home poses, speed of the planning, RViz/scene on or off |
+| `scan:` | sphere center and radius, waypoint grid, IK and planner settings, platform mesh, keep-outs, walls |
+| `scan3d:` | ROS topics of the photo handshake, `wait_for_next` |
+| `digital_io:` | robot digital pins mapped to ROS topics |
 
-**IK and planning**
+> The launch files read the **installed** copy: after editing the file run
+> `colcon build --packages-select ur_automata_bringup` and `source install/setup.bash`.
 
-| parameter | effect |
-|---|---|
-| `enum_ik_timeout` | IK timeout during the enumeration phase (`scan_sequence_node`). Worst-case cost of the phase = waypoints × pitch values × seeds × timeout |
-| `planners` | chain used by `scan_sequence_node`: each segment tries the planners in order and stops at the first that succeeds. Default `[pilz_ptp, ompl]`; the full chain `[pilz_circ, pilz_ptp, stomp, ompl]` was measured slower (262 s vs 143 s) without reducing the segments that fall back to OMPL |
-| `ompl_algorithm` | used when planning with OMPL (`RRTConnect`, `RRTstar`, `PRM`, …) |
-| `planning_time`, `planning_attempts` | time of one OMPL request and parallel attempts in it. 15 s here: with RRTstar every OMPL segment uses the whole time to shorten the path, and it is only paid in the calibration run |
-| `retry_planning_times`, `retry_ompl_algorithm` | when nothing is found in `planning_time`, try again with each of these times (e.g. `[30.0, 60.0]`) and with this OMPL algorithm (default `RRTConnect`) before going to the recovery pose. RRTstar grows one tree from the start and can miss a narrow passage for minutes (wp 13 under the platform: nothing in 15 + 30 + 60 s); RRTConnect grows trees from both ends and gets through. Planning time only matters in the calibration run, the replay does not plan |
-| `fallback_search`, `fallback_radius_mm` | offline search for an alternative point on the sphere near a waypoint that has no valid IK solution |
+Details: [docs/configuration.md](docs/configuration.md).
 
-Allowed entries in `planners`:
-
-| entry | what it does | when it fails |
-|---|---|---|
-| `pilz_circ` | arc on the sphere centered at `scan.center`: the TCP stays on the sphere and the camera frames the object for the whole segment | when not starting from a point on the sphere (skipped from `home` and from the recovery poses), near singularities, or if the arc collides |
-| `pilz_ptp` | straight line in joint space, deterministic, ~10 ms | when the line goes through an obstacle |
-| `ompl` | OMPL with `ompl_algorithm`: RRTConnect returns the first path it finds (fast, often long), RRTstar keeps shortening it for the whole `planning_time` | RRTstar can miss narrow passages: see `retry_planning_times` |
-
-The final summary prints a `Planner usati:` line with the count per planner:
-this is the metric used to compare two runs. Many segments on `ompl` mean
-large, unpredictable motions.
-
-> `pilz_*` **ignores** the path constraint used when `lock_pitch: false`.
-> `pilz_circ` is the exception: it uses its own path constraint (the arc
-> center), which the node sets and removes around that single attempt.
-> `stomp` was measured and removed (no `stomp_planning.yaml` any more): to
-> try it again, add that file back in `ur_automata_moveit_config/config`.
-
-**Dry run.** To see the planned sequence and its forecast without moving the
-robot (bring-up running, no Play needed):
-
-```bash
-ros2 launch ur_automata_scan scan_sequence.launch.py dry_run:=true 2>&1 | tee ~/ur/log/<name>_dry.log
-```
-
-It stops after the DP (~1 min) and prints the `Previsione:` line (forecast arm
-swings, elbow path, segments that will need OMPL), the list of those segments
-and the **arm envelope**: the box holding the arm links in every configuration
-the scan needs (chosen waypoint solutions, start, `home`, `lower_scan_ready`),
-with a proposed `walls:` block (that box + 0.10 m). Walls there cut none of the
-needed configurations but keep the arm from swinging out. Use it to compare
-settings before a real run.
-
-### 9.2 Line-of-sight check
-
-Before the IK enumeration, `scan_sequence_node` casts the segment
-waypoint → `scan.center` against the world objects of the planning scene
-(meshes triangle by triangle, primitive shapes through `geometric_shapes`). If
-the segment hits something, the waypoint gets the `OCCLUDED` status: no IK
-search and no fallback, orange marker in RViz, and a separate counter in the
-summary (`Vista coperta: N waypoint scartati`). Fallback candidates go through
-the same check.
-
-Ignored by the check: `support_center`, `artefact`, the keep-outs
-(`table_margin` and the `keepouts` shapes) and hits within 3 cm of the center (the
-disk right under the object, crossed by every lower-hemisphere ray a few
-millimeters from the center). The check is always on and uses a single ray
-along the optical axis, not the full camera field of view.
-
-This is different from `occlusion_check` (§9.1), which looks at the *robot
-arm* hiding the platform for a given IK solution. The line-of-sight check on
-scene objects stays on the single center ray: the platform's own stem hides part
-of the bottom rim from below anyway, on its side.
-
-### 9.3 Sectors and arm swings
-
-The classic order walks each ring all the way around the object (360°). Going
-around, the arm has to switch configuration (elbow, wrist) somewhere, usually
-behind the object, and that switch is a big, visible swing. With `sectors: 4`
-every hemisphere is split into 4 azimuth slices (front = robot side, side,
-back, other side) and visited slice by slice, rings in serpentine order inside
-the slice.
-
-The DP cost of a segment is what we want to keep small: the path of the elbow
-plus the path of the TCP along the straight joint-space line (the path of Pilz
-PTP), computed with forward kinematics, plus a small joint term.
-
-| parameter | effect |
-|---|---|
-| `sectors` | slices per hemisphere; `0` = classic ring-by-ring order |
-| `sector_offset_deg` | rotation of the slices (counterclockwise seen from above). `0` = sector 0 centered on the robot side (front / right / back / left); `45` = boundaries on the robot → center axis (front-right / back-right / back-left / front-left) |
-| `joint_cost_weight` | DP segment cost = elbow path + TCP path (m) + this × joint distance (rad). The joint term keeps big wrist spins from being free |
-| `swing_threshold_m` | a motion is reported as an arm swing when the elbow travels more than this |
-
-The summary line `Sbracciate:` counts the executed motions whose elbow path is
-above the threshold and lists them, with the planner that produced each one.
-In the forecast, blocked segments (straight line in collision) are listed as
-going to OMPL.
-Recoveries and the final return to `home` are not counted.
-
-Tried and dropped on 2026-09-29: per-joint weights with an IK-branch penalty in
-the DP cost (more swings than the plain joint distance); a home pose per
-sector (the DP never chose it when it was optional: a detour always makes the
-arm travel more); a set-back path on blocked segments, i.e. the camera backs
-away from the sphere by 5-15 cm, moves and comes back with three PTP motions
-(never free in this cell: backing away pushes the upper arm into the platform
-or the wrist into the table).
-
-### 9.4 Calibration and replay
-
-Planning a scan takes ~1.5 min before the robot moves (IK enumeration and
-sequence), and every blocked segment waits for OMPL. For work sessions the scan
-is **recorded once** and then **played back** with the same motions and timing
-every time.
-
-**Calibration** (once, and again after changing anything in the cell):
-
-```bash
-ros2 launch ur_automata_scan scan_sequence.launch.py record:=true 2>&1 | tee ~/ur/log/calibration.log
-ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
-```
-
-A segment that OMPL cannot solve in `planning_time` is tried again with
-`retry_planning_times` before going to the recovery pose: the calibration may
-take longer, the replay does not. At the end of a complete scan every executed
-motion (waypoints, recoveries, return to `home`) is saved with its full timing to `scan.recording_file`
-(default `recordings/scan_sequence.yaml` in the repo). An interrupted scan is
-not saved. If the run needed recoveries they are recorded too, and the summary
-suggests running the calibration again.
-
-**Work session:**
-
-```bash
-ros2 launch ur_automata_scan scan_replay.launch.py
-ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
-ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # stops after the current motion
-```
-
-Before moving, `scan_replay_node` refuses the recording if:
-
-- scan center, radius, planning group or end-effector link differ from
-  `automata_config.yaml`;
-- the current robot model does not put the camera where it was recorded at
-  the end of every waypoint motion (2 mm / 1°): TCP, end effector or base pose
-  changed;
-- any recorded point collides with the current planning scene (walls, platform
-  or anything else changed).
-
-RViz shows a small camera frustum on every recorded waypoint (topic
-`/scan_waypoints_markers`): gray = not reached yet, green = reached. The
-waypoints the calibration could not reach are not drawn.
-
-Then it moves to the first recorded point with a planned motion and plays the
-recorded motions one after the other. MoveIt refuses a motion if the robot is
-not where it starts. The recorded speed is the one of the calibration
-(`trajectory_scaling_factor`); the PolyScope speed slider still slows it down.
-
-To play the same recording slower, without a new calibration, pass `speed:=`
-(1.0 = as recorded, 0.5 = half speed; values above 1.0 are refused):
-
-```bash
-ros2 launch ur_automata_scan scan_replay.launch.py speed:=0.5
-```
-
-The path is the same: only times, velocities and accelerations are rescaled.
-
-**Second method: TSP planner.** `ur_automata_scan_tsp` plans the same scan
-choosing also the visit order, and saves its own file
-(`recordings/scan_tsp.yaml`), so the two methods can be run one after the other
-with no new calibration.
-
-| | `ur_automata_scan` | `ur_automata_scan_tsp` |
-|---|---|---|
-| calibration | `scan_sequence.launch.py record:=true` + `/start`: the robot moves | `scan_tsp.launch.py mode:=plan plan_file:=<new file>`: the robot does not move |
-| calibration time | ~1.5 min of planning, then the scan (177 s in the last run) | 6–7 min (356.5 s and 410.1 s in two runs) |
-| saved file | `recordings/scan_sequence.yaml` | `recordings/scan_tsp.yaml` |
-| work session | `scan_replay.launch.py` + `/scan_replay_node/start` | `scan_tsp.launch.py mode:=execute` + object name on `/scan3d/start` |
-| motion time | 115–129 s | 91–96 s |
-| start pose | any: it first moves to the start of the recording | any: it first moves to the start state of the plan (`home`) |
-| slower | `speed:=0.5` | `speed:=0.5` |
-
-Plan the second method to a new file and copy it over `scan_tsp.yaml` only if
-it is better than the versioned one: the result changes from run to run. Both
-need a new calibration only when the cell changes. Details, timing of each
-phase and all the measured runs:
-[`ur_automata_scan_tsp/README.md`](src/automata_robot/ur_automata_scan_tsp/README.md).
-
-### 9.5 Scene
-
-`platform_sim: true` builds the platform as a disk + 3 cylindrical legs.
-`false` loads the STL file named by `platform_mesh` from
-`ur_automata_scene/meshes/` (exported in mm, so scaled ×0.001). The mesh is
-placed so that the top face of the scanned disk matches `scan.center`: moving
-the platform only means changing `scan.center`. Switching STL files only needs
-a rebuild of `ur_automata_bringup` (it is a YAML key), not of the scene package.
-
-| `platform_mesh` | content |
-|---|---|
-| `disk.stl` | only the Ø300 × 4 mm disk close to the robot. There is **no support** under the disk in the scene. Same reference as `platform01.stl`, so it would also end up 5.9 cm too high |
-| `platform01.stl` | the full rotating platform: two disks at ±0.20 m from the axis, hub, stem, base with the motor on the side away from the robot; ~28k triangles. 0.514 m tall: the scene now uses the measures of `platform02.stl`, so this file would end up 5.9 cm too high |
-| `platform02.stl` | (in use) as `platform01.stl` with the stem 59 mm shorter: the feet are 0.455 m below the disk, so with `center.z` 0.455 the platform stands on the table. The mesh pose and the keep-outs use the measures of this file |
-
-The object to scan is `meshes/ceramic_model.obj`, placed at `scan.center`.
-
-`table_margin` (meters, `0` = off) adds a semi-transparent yellow keep-out
-slab *margin* tall on the table under the sphere, starting at y = 0.12 so it
-does not touch the base. MoveIt's collision check is binary, so this is how a
-safety margin is obtained; it applies to the IK candidate filter and to the
-planners, paths included. Careful under the disk: there are ~28 cm between
-table and platform and the arm goes in edgewise, so a 2 cm margin is enough to
-lose the lowest waypoints.
-
-`keepouts` adds light blue, very transparent keep-out shapes around the real
-platform (only with `platform_sim: false`), each with `enabled`, `diameter` and
-`height` in meters (the `support` box has a `margin`):
-
-| cylinder | where |
-|---|---|
-| `stem_base` | lower part of the stem (hub Ø120, collars Ø72), standing on the top of the base, on the stem axis 0.20 m behind `center` |
-| `stem` | stem (Ø60 in the STL), standing on top of `stem_base` |
-| `disk` | artefact disk, top face at `center`, going down by `height` |
-| `support` | box around the block on top of the stem (180 × 120 × 47 mm), `margin` larger on every side (instead of `diameter`/`height`); the top is cut at the disk top face |
-
-A very thin cylinder can be "skipped" between two collision checks of a path,
-so keep `disk.height` around 1 cm or more. The scene is part of the TSP plan:
-after a change, plan again (`mode:=plan`).
-
-`walls` (`back_y`, `left_x`, `right_x`, `top_z`, meters, `0` = no wall) adds
-the cell walls behind and beside the robot, never in front, and a ceiling at
-height `top_z` (it must stay above the highest waypoint, `center.z + radius`,
-plus the end effector). They limit the space where
-the planners can wander, they do not shorten the paths inside it.
-Constraints: `back_y` no further than −0.42 (at `home` the elbow reaches
-y −0.37), `right_x` not below 0.75 (at `lower_scan_ready` the end effector
-reaches x 0.71).
-
-The farthest point of the sphere from the base is at `|scan.center| + radius`:
-with this end effector the practical UR5e limit is ~0.91 m, so with
-`radius: 0.30` the center must stay within ~0.60 m of the base.
-
----
-
-## 10. Repo layout
+## Repository layout
 
 ```
-docker/                  Dockerfile, entrypoint, Python requirements
-docker-compose.yaml      ros_dev service: GPU, X11, host network, workspace mount
-run.sh                   build/rebuild/run/down wrapper
-start_ursim_seccomp.sh   URSim start with the seccomp workaround
-recordings/              recorded scans for scan_replay_node (written by the calibration run)
-                         and plans of scan_tsp_node (written by mode:=plan)
-
-src/automata_robot/
-  ur_automata_bringup/         single config + top-level launch files (control, moveit, bringup) + RViz
-  ur_automata_description/     cell URDF/xacro, end-effector mesh
-  ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limits, OMPL/Pilz pipelines, MoveIt controllers,
-                               Setup Assistant launch (to edit the configuration again)
-  ur_automata_scene/           planning scene: table, platform, object, walls; STL/OBJ meshes
-  ur_automata_scan/            spherical waypoint generation, sequence planner (DP), executor nodes,
-                               scan recording + replay node, gtest
-  ur_automata_scan_tsp/        experimental scan planner: visit order with OR-Tools, plan saved
-                               and executed later; uses the libraries of ur_automata_scan
-
-src/utils/                     UR driver submodule (upstream jazzy, pinned commit) — read-only;
-                               ur_io_ros2_manager (digital I/O on topics)
+ur/
+├── docker/ · docker-compose.yaml · run.sh    Docker image and container
+├── start_ursim_seccomp.sh                     URSim simulator (host)
+├── recordings/                                saved scan plans (scan_tsp_real.yaml = real robot)
+├── docs/                                      detailed documentation
+└── src/
+    ├── automata_robot/
+    │   ├── ur_automata_bringup/        config file, launch files, RViz config
+    │   ├── ur_automata_description/    URDF of the cell, end-effector mesh, camera TCP
+    │   ├── ur_automata_moveit_config/  MoveIt configuration (SRDF, TRAC-IK, OMPL, Pilz)
+    │   ├── ur_automata_scene/          collision scene: table, platform, object, keep-outs
+    │   ├── ur_automata_scan/           sphere waypoints, IK, sequence planner (library)
+    │   └── ur_automata_scan_tsp/       scan_tsp_node: plan and execute the scan
+    └── utils/
+        ├── Universal_Robots_ROS2_Driver/   UR driver (git submodule, read-only)
+        └── ur_io_ros2_manager/             robot digital I/O on topics
 ```
 
-The end effector is the `ee_automata_V2.stl` mesh attached to `tool0`; the TCP
-`ee_automata_tcp` is at `xyz = (0, 0.052, 0.1745)` from `tool0` (lens center of V2). Changing the
-end-effector version means updating both the mesh **and** the TCP offset in
-`ur_automata.urdf.xacro`.
+## Documentation
 
----
-
-## 11. Troubleshooting
-
-| Symptom | Cause / fix |
+| Page | Contents |
 |---|---|
-| I edit `automata_config.yaml` and nothing changes | launch files read the installed share: `colcon build --packages-select ur_automata_bringup` + `source install/setup.bash` |
-| The driver starts but the robot does not move | **Play** on External Control is missing: press it again after every bring-up restart. Alternatively `headless_mode:=true` |
-| `Can't accept new action goals. Controller is not running` | the program on the controller is not running (same issue as above) |
-| URSim does not start, `URControl` errors out | kernel ≥ 6.15: use `./start_ursim_seccomp.sh`, not the official script |
-| PolyScope does not see the URCap | the `.jar` must be in `~/.ursim/e-series/urcaps`; old `.urcap` files are no longer recognized by PolyScope 5.25 |
-| External Control does not connect from URSim | Host IP must be `192.168.56.1` (the `ursim_net` gateway), not `127.0.0.1` |
-| `No kinematics solver instantiated for group ur_manipulator` | the application node did not load `kinematics.yaml`: the `ur_automata_scan` launch files pass it under `robot_description_kinematics`, a hand-written node must do the same |
-| Plausible trajectories but wrong positions | `ur_type` differs between control and moveit, or the calibration file is missing on the real robot |
-| I cannot see the waypoint markers in RViz | RViz must run with `automata.rviz` (the bring-up does this) and the **Scan waypoints** display must be enabled; the topic is `/scan_waypoints_markers` |
-| Many waypoints fail IK | `radius` too large or `center` too far from the base: the sphere leaves the arm's reach |
-| Some waypoints are `OCCLUDED` | a scene object (e.g. the platform stem) is between the waypoint and the center: expected, see §9.2 |
-| Many planning failures | raise `planning_time` and `planning_attempts`, or add `ompl` at the end of `planners` |
-| Plan fails in a few ms with `INVALID_MOTION_PLAN`, move_group says `ValidateSolution: Computed path is not valid` | the planner found a path but checked it with too large a step and it grazes a thin obstacle: lower `longest_valid_segment_fraction` in `config/ompl_planning.yaml` (currently 0.001 ≈ 1.5°) |
-| move_group warns `Cannot find planning configuration ... kConfigDefault` | the entry is missing from `planner_configs` in `ompl_planning.yaml`: OMPL ignores `scan.ompl_algorithm` and uses RRTConnect |
-| The node only reports a generic FAILURE | the real causes (Pilz limits, ValidateSolution, OMPL unable to solve) are in the move_group log: `ls -t /home/ros/.ros/log/move_group_*.log \| head -1` inside the container |
-| `scan_replay_node` refuses to start | it prints why: config (center, radius, end effector) differs from the recording, the camera poses do not match the current robot model, or a recorded point collides with the current scene. Run the calibration again (`record:=true`) |
-| CMake warns `OR-Tools not found in /opt/ortools: ur_automata_scan_tsp is not built` | the image is older than the OR-Tools line of the Dockerfile: `./run.sh build` on the host and start a new container. The rest of the workspace builds anyway |
-| `scan_tsp_node mode:=execute` refuses the plan | it lists every reason (scan settings, scene object moved, ...): fix it or plan again with `mode:=plan` |
-| RViz does not open from the container | `xhost +local:docker` (already done by `./run.sh run`) and `DISPLAY` set on the host |
+| [docs/real_robot.md](docs/real_robot.md) | network, kinematic calibration, power-on sequence, first motion |
+| [docs/ursim.md](docs/ursim.md) | try everything in the official UR simulator |
+| [docs/mqtt.md](docs/mqtt.md) | MQTT topics and messages, camera app, orchestrator rules |
+| [docs/scan.md](docs/scan.md) | how the scan is planned, all scan parameters, scene, measured results |
+| [docs/configuration.md](docs/configuration.md) | config file, launch arguments, what to rebuild after a change |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | known problems and fixes |
+| [ur_automata_scan_tsp/README.md](src/automata_robot/ur_automata_scan_tsp/README.md) | the TSP planning method in depth |
+
+## Known limitations
+
+- The robot waits for the camera **without a timeout**: if the camera never
+  answers, the scan stays on that waypoint (stop it with Ctrl+C).
+- The orchestrator only gets the final `done`; a robot status topic
+  (ready / scanning / error) is not there yet.
+- *Play* on the teach pendant is always manual.
+
+## Built with
+
+[ROS 2 Jazzy](https://docs.ros.org/en/jazzy/) ·
+[MoveIt 2](https://moveit.ai/) ·
+[Universal Robots ROS 2 Driver](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver) ·
+[TRAC-IK](https://bitbucket.org/traclabs/trac_ik) ·
+[OR-Tools](https://developers.google.com/optimization) ·
+[mqtt_client](https://github.com/ika-rwth-aachen/mqtt_client) ·
+[Eclipse Mosquitto](https://mosquitto.org/)

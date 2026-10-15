@@ -63,10 +63,14 @@ time limit); nothing here proves them optimal.
 
 ## Usage
 
-Bring-up and URSim as in the main README. Build (inside the container):
+Bring-up and URSim as in the main README. The usual way to run this node is
+the one-command launcher, which starts it after the robot, MoveIt and the scene
+(`ros2 launch ur_automata_bringup ur_automata_bringup.launch.py`, see
+[docs/configuration.md](../../../docs/configuration.md)); the commands below
+start it alone, with the bring-up already running. Build (inside the container):
 
 ```bash
-colcon build --packages-select ur_automata_scan_tsp --cmake-args -DCMAKE_CXX_FLAGS="-w"
+colcon build --packages-select ur_automata_scan_tsp --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=OFF
 source install/setup.bash
 ```
 
@@ -129,29 +133,24 @@ ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}   # resumes
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute speed:=0.5   # half speed, same path
 ```
 
-**Photo handshake.** On every waypoint the node publishes, as `std_msgs/String`:
+**Photo handshake.** As `std_msgs/String`, bridged to MQTT by `mqtt_client`
+(started by this launch file with `mode:=execute`):
 
 | topic (default) | direction | payload |
 |---|---|---|
 | `/scan3d/start` | in | object name, e.g. `object_3`: starts a scan |
-| `/scan3d/waypoint` | out | `wp_5; position: [x, y, z]; orientation: [qx, qy, qz, qw]` |
-| `/scan3d/capture` | out | `image_5`: take the photo |
-| `/scan3d/next` | in | any message: photo taken, go on |
+| `/scan3d/acquire` | out | `acquire: object_3; camera pose: [x, y, z, qx, qy, qz, qw]; waypoint_5` |
+| `/scan3d/status` | in | camera state (JSON): `measure_complete` with the same object and waypoint → next waypoint |
 | `/scan3d/done` | out | `scan3D object_3` at the end (`scan3D object_3 ERROR` if interrupted) |
 
 The pose is the one of `ee_automata_tcp` in the `world` frame (m, quaternion).
-The number `i` goes from 1 at the north pole to N at the south pole, ring by
+The number `n` goes from 1 at the north pole to N at the south pole, ring by
 ring, counterclockwise from +X inside a ring, counting only the waypoints of
-the plan (77 with the current one). The robot visits them in the TSP order, so
-the numbers come out of order. After `/scan3d/done` the node waits for the
-next object. Topic names and `wait_for_next` (false = do not wait for
-`/scan3d/next`, for tests without the camera) are in the `scan3d:` section of
-`automata_config.yaml`. To answer by hand:
-
-```bash
-ros2 topic echo /scan3d/capture
-ros2 topic pub --once /scan3d/next std_msgs/msg/String "{data: ok}"
-```
+the plan. The robot visits them in the TSP order, so the numbers come out of
+order. After `/scan3d/done` the node waits for the next object. Topic names and
+`wait_for_next` (false = do not wait for the camera) are in the `scan3d:`
+section of `automata_config.yaml`; MQTT topics, camera app and tests by hand are
+in [docs/mqtt.md](../../../docs/mqtt.md).
 
 This method and `scan_replay_node` use separate files (`recordings/scan_tsp.yaml`
 and `recordings/scan_sequence.yaml`): once both are calibrated, one can be run
