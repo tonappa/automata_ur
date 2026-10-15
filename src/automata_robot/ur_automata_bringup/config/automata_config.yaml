@@ -163,17 +163,14 @@ scan:
   #               Serve partire da un punto della sfera, quindi da `home` e
   #               dalle pose di recovery viene saltato (raggi diversi).
   #   pilz_ptp  → retta in joint space, deterministica, ~10 ms.
-  #   stomp     → parte dalla stessa retta e la deforma finche' esce dalla
-  #               collisione: percorso ripetibile, senza le deviazioni casuali
-  #               di RRTConnect. Serve `stomp_planning.yaml` in
-  #               ur_automata_moveit_config/config.
   #   ompl      → OMPL with `ompl_algorithm`, last resort.
   # Il centro dell'arco e' letto in `planning.global_frame`, che deve coincidere
   # con il frame radice del modello (qui `world`).
   # dp10 con [pilz_circ, pilz_ptp, stomp, ompl]: 262 s contro 143 s di dp7 e
   # OMPL usato 5 volte invece di 6 -> archi piu' lenti delle rette, 25 CIRC
   # falliti (polso oltre i limiti di accelerazione) e 5 STOMP in timeout.
-  # Si resta su retta + OMPL; la catena resta disponibile per altre prove.
+  # Si resta su retta + OMPL. STOMP e' stato tolto (2026-10-15): per riprovarlo
+  # serve di nuovo stomp_planning.yaml in ur_automata_moveit_config/config.
   planners: [pilz_ptp, ompl]
 
   # Algoritmo OMPL, usato quando si pianifica con OMPL (voce `ompl` in

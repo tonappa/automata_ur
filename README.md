@@ -635,7 +635,6 @@ Allowed entries in `planners`:
 |---|---|---|
 | `pilz_circ` | arc on the sphere centered at `scan.center`: the TCP stays on the sphere and the camera frames the object for the whole segment | when not starting from a point on the sphere (skipped from `home` and from the recovery poses), near singularities, or if the arc collides |
 | `pilz_ptp` | straight line in joint space, deterministic, ~10 ms | when the line goes through an obstacle |
-| `stomp` | starts from the same line and deforms it until it is collision-free: smooth, repeatable path | when the obstacle is too large for a local deformation |
 | `ompl` | OMPL with `ompl_algorithm`: RRTConnect returns the first path it finds (fast, often long), RRTstar keeps shortening it for the whole `planning_time` | RRTstar can miss narrow passages: see `retry_planning_times` |
 
 The final summary prints a `Planner usati:` line with the count per planner:
@@ -645,7 +644,8 @@ large, unpredictable motions.
 > `pilz_*` **ignores** the path constraint used when `lock_pitch: false`.
 > `pilz_circ` is the exception: it uses its own path constraint (the arc
 > center), which the node sets and removes around that single attempt.
-> `stomp` needs `stomp_planning.yaml` in `ur_automata_moveit_config/config`.
+> `stomp` was measured and removed (no `stomp_planning.yaml` any more): to
+> try it again, add that file back in `ur_automata_moveit_config/config`.
 
 **Dry run.** To see the planned sequence and its forecast without moving the
 robot (bring-up running, no Play needed):
@@ -863,8 +863,9 @@ recordings/              recorded scans for scan_replay_node (written by the cal
 
 src/automata_robot/
   ur_automata_bringup/         single config + top-level launch files (control, moveit, bringup) + RViz
-  ur_automata_description/     cell URDF/xacro, end-effector mesh, visualization-only launch
-  ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limits, OMPL/Pilz/STOMP pipelines, MoveIt controllers, generated launch files
+  ur_automata_description/     cell URDF/xacro, end-effector mesh
+  ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limits, OMPL/Pilz pipelines, MoveIt controllers,
+                               Setup Assistant launch (to edit the configuration again)
   ur_automata_scene/           planning scene: table, platform, object, walls; STL/OBJ meshes
   ur_automata_scan/            spherical waypoint generation, sequence planner (DP), executor nodes,
                                scan recording + replay node, gtest
@@ -872,18 +873,6 @@ src/automata_robot/
                                and executed later; uses the libraries of ur_automata_scan
 
 src/utils/                     upstream UR submodules (driver and description), jazzy branch — read-only
-```
-
-View the model only, without driver or MoveIt:
-
-```bash
-ros2 launch ur_automata_description display.launch.py ur_type:=ur5e
-```
-
-Try MoveIt without robot and without URSim (mock hardware):
-
-```bash
-ros2 launch ur_automata_moveit_config demo.launch.py
 ```
 
 The end effector is the `ee_automata_V2.stl` mesh attached to `tool0`; the TCP
