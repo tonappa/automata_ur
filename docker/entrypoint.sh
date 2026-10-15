@@ -15,7 +15,7 @@ elif [ "$ROS_VERSION" = "2" ] && [ -f "${WORKSPACE_PATH}/install/setup.bash" ]; 
     echo "Sourcing ROS 2 workspace: ${WORKSPACE_PATH}/install/setup.bash"
     source "${WORKSPACE_PATH}/install/setup.bash"
 else
-    echo "Workspace not built yet. Run: colcon build --cmake-args -DCMAKE_CXX_FLAGS=\"-w\" --executor sequential"
+    echo "Workspace not built yet. Run: colcon build --cmake-args -DCMAKE_CXX_FLAGS=\"-w\" -DBUILD_TESTING=OFF --executor sequential"
 fi
 
 # execute the user command (e.g., bash)

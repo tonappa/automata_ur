@@ -1,2 +1,0 @@
-pyquaternion
-paho-mqtt

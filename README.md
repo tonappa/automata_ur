@@ -40,7 +40,7 @@ cd ~/ur
 ./run.sh run                      # opens a shell in the container
 # inside the container:
 cd /home/ros/ur
-colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" --executor sequential   # after a change or a fresh clone
+colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=OFF --executor sequential   # after a change or a fresh clone
 source install/setup.bash
 ros2 launch ur_automata_bringup ur_automata_bringup.launch.py
 ```
@@ -236,17 +236,22 @@ source /opt/ros/jazzy/setup.bash
 source /home/ros/ur/install/setup.bash
 ```
 
-The main shell's entrypoint does it on its own: it sources ROS, sources
-`install/setup.bash` if it exists, runs `apt update/upgrade` and
-`rosdep install --from-paths src --ignore-src -r -y --skip-keys "moveit_resources"`.
+The main shell's entrypoint does it on its own: it sources ROS and
+`install/setup.bash` if it exists. It installs nothing at startup: system
+dependencies are in `docker/Dockerfile` (add new ones there, then
+`./run.sh build`).
 
 ## 4. Building the workspace (inside the container)
 
 ```bash
 cd /home/ros/ur
-colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" --executor sequential
+colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=OFF --executor sequential
 source install/setup.bash
 ```
+
+`-DBUILD_TESTING=OFF` skips the tests of every package, including the UR
+driver ones, whose extra dependencies (e.g. `ros2_control_test_assets`) are
+not in the image.
 
 A single package:
 
@@ -255,9 +260,11 @@ colcon build --packages-select ur_automata_bringup
 source install/setup.bash
 ```
 
-Tests (gtest in the two scan packages; the other packages have no tests):
+Tests (gtest in the two scan packages; the other packages have no tests).
+Build those two with the tests first:
 
 ```bash
+colcon build --packages-select ur_automata_scan ur_automata_scan_tsp --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=ON
 colcon test --packages-select ur_automata_scan ur_automata_scan_tsp
 colcon test-result --verbose
 ```

@@ -55,9 +55,7 @@ RUN apt-get update && \
     rosdep update --rosdistro=${ROS_DISTRO} && \
     apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ur \
-    ros-jazzy-ur-simulation-gz \
     ros-${ROS_DISTRO}-rviz2 \
-    ros-${ROS_DISTRO}-ros-gz \
     ros-${ROS_DISTRO}-rqt-runtime-monitor \
     ros-${ROS_DISTRO}-plotjuggler-ros \
     ros-${ROS_DISTRO}-moveit \
@@ -70,10 +68,6 @@ RUN apt-get update && \
 RUN curl -fsSL -o /tmp/ortools.tgz https://github.com/google/or-tools/releases/download/v9.15/or-tools_amd64_ubuntu-24.04_cpp_v9.15.6755.tar.gz && \
     echo "6f389320672cee00b78aacefb2bde33fef0bb988c3b2735573b9fffd1047fbda  /tmp/ortools.tgz" | sha256sum -c && \
     mkdir -p /opt/ortools && tar xzf /tmp/ortools.tgz -C /opt/ortools --strip-components=1 && rm /tmp/ortools.tgz
-
-# ========== Python packages ========== #
-COPY docker/requirements.txt /tmp/requirements.txt
-RUN pip install --break-system-packages --no-cache-dir -r /tmp/requirements.txt
 
 # ============================= user creation (as ROOT) ============================ #
 RUN OLD_USER=$(getent passwd ${MYUID} | cut -d: -f1) \
@@ -99,7 +93,7 @@ ENV HOME=/home/${USER}
 
 # ================================ workspace config (as USER) ================================ #
 # Note: workspace source is mounted as a volume at runtime — build with:
-#   colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" --executor sequential
+#   colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" -DBUILD_TESTING=OFF --executor sequential
 WORKDIR /home/${USER}/${WORKSPACE_NAME}
 RUN mkdir -p ./src
 
